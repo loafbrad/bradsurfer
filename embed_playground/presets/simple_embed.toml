@@ -1,0 +1,12 @@
+# Minimal layout for embedding: only the waveform view and the overview.
+#
+# Native Surfer picks this up when copied to `.surfer/config.toml` in (or above)
+# the directory Surfer is started from. The web build ignores config files, so the
+# embed playground applies the equivalent messages from simple_embed.json instead.
+
+[layout]
+show_menu = false
+show_toolbar = false
+show_hierarchy = false
+show_overview = true
+show_statusbar = false

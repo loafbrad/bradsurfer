@@ -1,0 +1,7 @@
+[
+    { "SetMenuVisible": false },
+    { "SetToolbarVisible": false },
+    { "SetSidePanelVisible": false },
+    { "SetOverviewVisible": true },
+    { "SetStatusbarVisible": false }
+]

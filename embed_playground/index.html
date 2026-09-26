@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Surfer Embed Playground</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            margin: 0;
+            padding: 16px;
+            background: #f4f4f4;
+            color: #222;
+        }
+        h1 { font-size: 1.3em; margin: 0 0 12px; }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        #surfer {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #aaa;
+            display: block;
+        }
+        #log {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            background: #fff;
+            border: 1px solid #ccc;
+            padding: 8px;
+            margin-top: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Surfer Embed Playground</h1>
+
+    <div class="controls">
+        <label>Example:
+            <select id="example">
+                <option>counter.vcd</option>
+                <option>picorv32.vcd</option>
+                <option>three_clocks.vcd</option>
+                <option>analog.vcd</option>
+                <option>vhdl3.fst</option>
+                <option>theme_demo.ghw</option>
+            </select>
+        </label>
+        <button id="load">Load</button>
+        <label>Preset:
+            <select id="preset">
+                <option value="simple_embed">simple_embed</option>
+                <option value="">(full UI)</option>
+            </select>
+        </label>
+    </div>
+
+    <div class="controls" id="panels">Show:</div>
+    <div class="controls" id="toolbar-groups">Toolbar groups:</div>
+
+    <!-- The initial file is loaded through the load_url query parameter, set below. -->
+    <iframe id="surfer" title="Surfer waveform viewer"></iframe>
+
+    <div id="log"></div>
+
+    <script>
+        const surfer = document.getElementById("surfer");
+        const logEl = document.getElementById("log");
+
+        function log(text) {
+            logEl.textContent += text + "\n";
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Surfer fetches waveforms itself, so it needs an absolute URL.
+        function exampleUrl(name) {
+            return new URL(`examples/${name}`, location.href).href;
+        }
+
+        function send(message) {
+            log("-> " + JSON.stringify(message));
+            surfer.contentWindow.postMessage(message, "*");
+        }
+
+        const initial = exampleUrl(document.getElementById("example").value);
+        // #dev stops Surfer's service worker from serving a cached build after a rebuild.
+        surfer.src = `surfer/?load_url=${encodeURIComponent(initial)}#dev`;
+        log("iframe src: " + surfer.src);
+
+        document.getElementById("load").onclick = () =>
+            send({ command: "LoadUrl", url: exampleUrl(document.getElementById("example").value) });
+
+        function inject(message) {
+            send({ command: "InjectMessage", message: JSON.stringify(message) });
+        }
+
+        function addCheckbox(containerId, label, onChange) {
+            const el = document.createElement("label");
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.checked = true;
+            box.onchange = () => onChange(box.checked);
+            el.append(box, " " + label);
+            document.getElementById(containerId).append(el);
+            return box;
+        }
+
+        // Each entry maps to a Set*Visible variant of surfer::Message.
+        const panels = {
+            "Menu bar": "SetMenuVisible",
+            "Toolbar": "SetToolbarVisible",
+            // The side panel holds the scope and variable browsers on the left.
+            "Side panel": "SetSidePanelVisible",
+            "Overview": "SetOverviewVisible",
+            "Status bar": "SetStatusbarVisible",
+        };
+        const panelBoxes = {};
+        for (const [label, variant] of Object.entries(panels)) {
+            panelBoxes[variant] = addCheckbox("panels", label, (visible) => inject({ [variant]: visible }));
+        }
+
+        // Group ids from TOOLBAR_GROUP_SPECS in libsurfer/src/toolbar.rs.
+        const toolbarGroups = [
+            "menu", "files", "copy", "zoom", "navigation", "transitions",
+            "add_items", "viewports", "undo", "cxxrtl", "time", "annotations",
+        ];
+        for (const group of toolbarGroups) {
+            addCheckbox("toolbar-groups", group, (enabled) =>
+                inject({ SetToolbarGroupEnabled: [group, enabled] }));
+        }
+
+        // A preset is a JSON list of surfer::Message values in presets/<name>.json.
+        // The empty name restores every panel.
+        async function applyPreset(name) {
+            const messages = name
+                ? await (await fetch(`presets/${name}.json`)).json()
+                : Object.keys(panelBoxes).map((variant) => ({ [variant]: true }));
+            log(`applying preset ${name || "(full UI)"}`);
+            for (const message of messages) {
+                inject(message);
+                const [variant, value] = Object.entries(message)[0];
+                if (variant in panelBoxes) panelBoxes[variant].checked = value;
+            }
+        }
+
+        const presetSelect = document.getElementById("preset");
+        presetSelect.onchange = () => applyPreset(presetSelect.value);
+
+        // Surfer only handles injected messages once its wasm module has set
+        // window.inject_message, which happens some time after the iframe loads.
+        const readyPoll = setInterval(() => {
+            if (typeof surfer.contentWindow?.inject_message === "function") {
+                clearInterval(readyPoll);
+                applyPreset(presetSelect.value);
+            }
+        }, 100);
+    </script>
+</body>
+</html>
