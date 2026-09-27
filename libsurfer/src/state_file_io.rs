@@ -22,14 +22,6 @@ use crate::{
     wave_source::{STATE_FILE_EXTENSION, WaveSource},
 };
 
-// JS bridge function defined in integration.js; used to post messages to the
-// VS Code extension host (where `showSaveFilePicker` is not available).
-#[cfg(all(target_arch = "wasm32", feature = "vscode"))]
-#[wasm_bindgen::prelude::wasm_bindgen]
-extern "C" {
-    fn surfer_notify_host(message_json: &str);
-}
-
 /// Normalizes a suggested file stem into a safe, non-empty value.
 ///
 /// Returns `fallback` when the input is blank or contains characters that
@@ -225,7 +217,7 @@ impl SystemState {
             "data": encoded,
             "fileName": file_name,
         });
-        surfer_notify_host(&msg.to_string());
+        crate::host::notify_host(&msg);
     }
 
     #[cfg(all(target_arch = "wasm32", not(feature = "vscode")))]

@@ -51,10 +51,15 @@ function register_message_listener() {
   });
 }
 
-// Called by the Surfer WASM code to send a message to the host (e.g. VS Code extension).
-// The host must have stored its postMessage handle in window.__surfer_host_api.
+// Called by the Surfer WASM code to send a message to the host. The VS Code extension
+// stores its postMessage handle in window.__surfer_host_api; a page embedding Surfer in
+// an iframe instead receives a window message with `source: "surfer"`, for example
+// `{source: "surfer", command: "TimeFlagClicked", id: 3}`.
 window.surfer_notify_host = function(message_json) {
+  const message = JSON.parse(message_json);
   if (window.__surfer_host_api) {
-    window.__surfer_host_api.postMessage(JSON.parse(message_json));
+    window.__surfer_host_api.postMessage(message);
+  } else if (window.parent !== window) {
+    window.parent.postMessage({ source: "surfer", ...message }, "*");
   }
 };

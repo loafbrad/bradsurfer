@@ -32,6 +32,7 @@ pub mod fzcmd;
 pub mod graphics;
 pub mod help;
 pub mod hierarchy;
+mod host;
 pub mod item_drawing_info;
 pub mod keyboard_shortcuts;
 pub mod keys;
@@ -54,6 +55,7 @@ pub mod system_state;
 #[cfg(test)]
 pub mod tests;
 pub mod time;
+pub mod time_flags;
 pub mod toolbar;
 pub mod tooltips;
 pub mod trace_style;
@@ -2484,6 +2486,21 @@ impl SystemState {
                 end,
                 viewport_idx,
             } => self.open_user_signal_value_editor(variable, start, end, viewport_idx),
+            Message::SetTimeFlags(flags) => {
+                if !flags.iter().any(|f| Some(f.id) == self.selected_time_flag) {
+                    self.selected_time_flag = None;
+                }
+                self.time_flags = flags;
+            }
+            Message::SelectTimeFlag(id) => {
+                self.selected_time_flag = id;
+            }
+            Message::TimeFlagClicked(id) => {
+                let time = self.time_flags.iter().find(|f| f.id == id)?.time.clone();
+                self.selected_time_flag = Some(id);
+                self.update(Message::CursorSet(time));
+                host::notify_host(&serde_json::json!({ "command": "TimeFlagClicked", "id": id }));
+            }
             Message::SetWaveEditSnap(snap) => {
                 // The reference signal's transitions are only known once it is loaded.
                 if let WaveEditSnap::Signal(variable) = &snap

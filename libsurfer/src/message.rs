@@ -20,6 +20,7 @@ use crate::frame_buffer::FrameBufferColorMode;
 use crate::graphics::{Graphic, GraphicId, GraphicsY};
 use crate::hierarchy::{ParameterDisplayLocation, ScopeExpandType};
 use crate::mousegestures::AnnotationKind;
+use crate::time_flags::TimeFlag;
 use crate::state::UserState;
 use crate::trace_style::TraceStyle;
 use crate::transaction_container::{
@@ -559,6 +560,12 @@ pub enum Message {
     RevertSignalEdits(Option<VariableRef>),
     /// Choose what edits on the canvas snap to.
     SetWaveEditSnap(WaveEditSnap),
+    /// Replace the time flags drawn on the canvas, e.g. failed assertions (see `time_flags.rs`).
+    SetTimeFlags(Vec<TimeFlag>),
+    /// Highlight one time flag, or none.
+    SelectTimeFlag(Option<u32>),
+    /// A time flag's badge was clicked: select it, move the cursor to it and tell the host.
+    TimeFlagClicked(u32),
     /// Apply the value typed into the user signal value editor.
     CommitUserSignalValue,
     CloseUserSignalValueEditor,

@@ -150,6 +150,10 @@ pub struct SystemState {
 
     pub(crate) annotation_id_source: u64,
     pub(crate) click_handled: bool,
+
+    /// Set by the host page, see `time_flags.rs`.
+    pub(crate) time_flags: Vec<crate::time_flags::TimeFlag>,
+    pub(crate) selected_time_flag: Option<u32>,
 }
 
 impl SystemState {
@@ -227,6 +231,8 @@ impl SystemState {
             new_user_signal_dialog: RefCell::new(None),
             annotation_id_source: 0,
             click_handled: false,
+            time_flags: vec![],
+            selected_time_flag: None,
             toolbar_dragging_group: None,
             toolbar_drop_row: None,
             toolbar_drop_index: None,

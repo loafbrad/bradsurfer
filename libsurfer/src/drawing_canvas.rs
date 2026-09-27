@@ -788,7 +788,32 @@ impl SystemState {
             ticks: &edit_ticks,
         };
         let wave_edit = self.handle_wave_edit_input(ui, &response, &edit_canvas, msgs);
+
+        // A click on a time flag's badge selects the flag instead of moving the cursor there.
+        let timeline_offset = self.default_timeline_offset();
+        let to_canvas = |p: Pos2| to_screen.inverse().transform_pos(p);
+        let clicked_time_flag = response
+            .clicked_by(PointerButton::Primary)
+            .then(|| pointer_pos_global.map(to_canvas))
+            .flatten()
+            .and_then(|pos| {
+                self.time_flag_at(waves, viewport_idx, frame_width, timeline_offset, pos)
+            });
+        if let Some(flag) = clicked_time_flag {
+            msgs.push(Message::TimeFlagClicked(flag.id));
+        }
+        self.time_flag_hover(
+            ui,
+            &response,
+            waves,
+            viewport_idx,
+            frame_width,
+            timeline_offset,
+            ui.input(|i| i.pointer.hover_pos()).map(to_canvas),
+        );
+
         let handle_cursor = !wave_edit.consumed
+            && clicked_time_flag.is_none()
             && !modifiers.command
             && ((response.dragged_by(PointerButton::Primary) && !do_measure)
                 || response.clicked_by(PointerButton::Primary));
@@ -824,7 +849,6 @@ impl SystemState {
                 None,
             ));
         }
-        let timeline_offset = self.default_timeline_offset();
 
         if self.annotation_kind.is_some() && response.drag_started_by(PointerButton::Primary) {
             let start = ui
@@ -941,6 +965,8 @@ impl SystemState {
             &waves.viewports[viewport_idx],
         );
 
+        self.draw_time_flag_lines(waves, &mut ctx, viewport_idx);
+
         self.draw_marker_boxes(waves, &mut ctx, viewport, row_offset);
 
         if self.show_default_timeline() {
@@ -958,6 +984,8 @@ impl SystemState {
             );
             self.draw_default_timeline(waves, &ctx, viewport_idx);
         }
+
+        self.draw_time_flag_badges(waves, &mut ctx, viewport_idx, timeline_offset);
 
         let time_formatter = TimeFormatter::new(
             &waves.inner.metadata().timescale,
