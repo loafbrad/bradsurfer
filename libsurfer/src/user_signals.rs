@@ -478,7 +478,54 @@ impl SystemState {
         *waves.user_signals_mut()? = user_signals;
         *waves.inner.as_waves_mut()?.signal_edits_mut()? = signal_edits;
         self.invalidate_signal_data_caches();
+        self.notify_host_signal_edits();
         Some(result)
+    }
+
+    /// Tells the host page about all edits of signals from the file, e.g. so it can apply
+    /// them to a simulation:
+    ///
+    /// ```json
+    /// {"command": "SignalEditsChanged",
+    ///  "edits": [{"variable": "tb.count", "width": 8,
+    ///             "changes": [[0, null], [100, "01010000"], [120, null]]}]}
+    /// ```
+    ///
+    /// `changes` are sorted by time; from each time on, a binary value replaces the file's
+    /// value and `null` falls back to it. Sent after every edit, revert, undo and redo.
+    pub(crate) fn notify_host_signal_edits(&self) {
+        let Some(container) = self.user.waves.as_ref().and_then(|w| w.inner.as_waves()) else {
+            return;
+        };
+        let Some((_, signal_edits)) = container.signal_edits() else {
+            return;
+        };
+        let mut edits = signal_edits
+            .named_changes()
+            .filter_map(|(variable, changes)| {
+                let width = container.editable_width(variable)?;
+                let changes = changes
+                    .iter()
+                    .map(|(time, value)| {
+                        let value = value.as_ref().map(|v| match v {
+                            VariableValue::BigUint(v) => format!("{v:0>width$b}", width = width as usize),
+                            VariableValue::String(s) => s.clone(),
+                        });
+                        serde_json::json!([time, value])
+                    })
+                    .collect::<Vec<_>>();
+                Some(serde_json::json!({
+                    "variable": variable.full_path_string(),
+                    "width": width,
+                    "changes": changes,
+                }))
+            })
+            .collect::<Vec<_>>();
+        edits.sort_by_key(|e| e["variable"].as_str().map(str::to_owned));
+        crate::host::notify_host(&serde_json::json!({
+            "command": "SignalEditsChanged",
+            "edits": edits,
+        }));
     }
 
     /// Whether `variable` is a signal from the file with edits (possibly through an alias).
@@ -570,6 +617,7 @@ impl SystemState {
             };
             let to_u64 = |t: &BigUint| u64::try_from(t).unwrap_or(u64::MAX);
             signal_edits.set_range(signal_ref, to_u64(&start), end.as_ref().map(to_u64), value);
+            signal_edits.set_name(signal_ref, variable.clone());
             Ok(())
         });
     }

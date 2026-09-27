@@ -13,7 +13,7 @@ use surfer_translation_types::VariableValue;
 use wellen::SignalRef;
 
 use crate::user_signals::ChangeList;
-use crate::wave_container::QueryResult;
+use crate::wave_container::{QueryResult, VariableRef};
 
 type Overlay = ChangeList<Option<VariableValue>>;
 
@@ -21,6 +21,8 @@ type Overlay = ChangeList<Option<VariableValue>>;
 pub struct SignalEdits {
     /// Shared with undo snapshots, and copied only when a snapshot's overlay is edited.
     overlays: HashMap<SignalRef, Arc<Overlay>>,
+    /// The variable each signal was last edited through, to name it outside Surfer.
+    names: HashMap<SignalRef, VariableRef>,
 }
 
 impl SignalEdits {
@@ -51,13 +53,30 @@ impl SignalEdits {
         overlay.set_range(start, end, Some(value));
     }
 
+    /// Remembers `variable` as the name to report edits of `signal_ref` under.
+    pub fn set_name(&mut self, signal_ref: SignalRef, variable: VariableRef) {
+        self.names.insert(signal_ref, variable);
+    }
+
     /// Removes all edits of `signal_ref`. Returns whether it had any.
     pub fn revert(&mut self, signal_ref: SignalRef) -> bool {
+        self.names.remove(&signal_ref);
         self.overlays.remove(&signal_ref).is_some()
     }
 
     pub fn revert_all(&mut self) {
         self.overlays.clear();
+        self.names.clear();
+    }
+
+    /// Every edited signal that has a name, with its overlay's changes: from each time on,
+    /// `Some` value replaces the file's value and `None` falls back to it.
+    pub fn named_changes(
+        &self,
+    ) -> impl Iterator<Item = (&VariableRef, &[(u64, Option<VariableValue>)])> {
+        self.overlays.iter().filter_map(|(signal_ref, overlay)| {
+            Some((self.names.get(signal_ref)?, overlay.changes()))
+        })
     }
 
     /// The value of `signal_ref` at `time` with edits applied. `original` gives the file's
@@ -260,6 +279,26 @@ mod tests {
 
     fn merged(edits: &SignalEdits) -> Vec<(u64, VariableValue)> {
         edits.merged_changes(signal(), FILE.iter().map(|(t, x)| (*t, v(*x))))
+    }
+
+    #[test]
+    fn named_changes_report_named_edits_until_reverted() {
+        use crate::wave_container::VariableRefExt as _;
+
+        let mut edits = SignalEdits::default();
+        edits.set_range(signal(), 10, Some(20), v(1));
+        // Edits made without a name (none in practice) are not reported.
+        assert_eq!(edits.named_changes().count(), 0);
+
+        let count = VariableRef::from_hierarchy_string("tb.count");
+        edits.set_name(signal(), count.clone());
+        let named = edits.named_changes().collect::<Vec<_>>();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].0, &count);
+        assert_eq!(named[0].1, &[(0, None), (10, Some(v(1))), (20, None)]);
+
+        assert!(edits.revert(signal()));
+        assert_eq!(edits.named_changes().count(), 0);
     }
 
     #[test]

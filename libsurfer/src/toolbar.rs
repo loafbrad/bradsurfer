@@ -725,7 +725,7 @@ impl SystemState {
         } else {
             (
                 icons::EDIT_2_LINE,
-                "Edit signals: drag on a created signal to set its value",
+                "Edit signals: drag on a signal to set its value",
             )
         };
         add_toolbar_button(

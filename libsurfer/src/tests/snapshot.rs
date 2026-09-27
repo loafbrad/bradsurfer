@@ -4448,6 +4448,20 @@ fn file_signal_edits_apply_to_aliases_undo_and_revert() {
 }
 
 #[test]
+fn signal_set_command_edits_file_signals_by_path() {
+    let _runtime = enter_test_runtime();
+    let mut state = loaded_state("examples/counter.vcd", &["tb.dut.reset"]);
+    assert_eq!(shown_value(&state, "tb.dut.reset", 250), Some(0));
+
+    // A dotted path is one parameter, not split into words at the dots.
+    state.add_batch_commands(vec!["signal_set tb.dut.reset 200 300 0b1".to_string()]);
+    wait_for_waves_fully_loaded(&mut state, 10);
+    assert!(is_edited(&state, "tb.dut.reset"));
+    assert_eq!(shown_value(&state, "tb.dut.reset", 250), Some(1));
+    assert_eq!(shown_value(&state, "tb.dut.reset", 350), Some(0));
+}
+
+#[test]
 fn file_signal_edits_are_dropped_on_reload() {
     let _runtime = enter_test_runtime();
     let mut state = loaded_state("examples/counter.vcd", &["tb.dut.reset"]);

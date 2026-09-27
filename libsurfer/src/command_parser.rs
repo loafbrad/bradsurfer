@@ -625,14 +625,18 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
                         }))
                     }),
                 ),
-                // signal_set <name> <start> <end or -> <value>
+                // signal_set <name> <start> <end or -> <value>, where <name> is a created
+                // signal or the full path of a signal from the file, e.g. tb.dut.count
                 "signal_set" => {
                     let timescale_for_signal_set = timescale.clone();
+                    let created_names = user_signal_names.clone();
                     Some(Command::NonTerminal(
-                        ParamGreed::Word,
+                        // Up to the next space, so a path like tb.count stays one parameter.
+                        ParamGreed::Custom(&separate_at_space),
                         user_signal_names.clone(),
                         Box::new(move |name, _| {
                             let name = name.to_string();
+                            let is_created = created_names.contains(&name);
                             let timescale = timescale_for_signal_set.clone();
                             single_word(
                                 vec![],
@@ -654,11 +658,13 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
                                     } else {
                                         Some(parse_time(end)?)
                                     };
+                                    let variable = if is_created {
+                                        VariableRef::new(UserSignals::scope(), name.clone())
+                                    } else {
+                                        VariableRef::from_hierarchy_string(&name)
+                                    };
                                     Some(Command::Terminal(Message::SetSignalValue {
-                                        variable: VariableRef::new(
-                                            UserSignals::scope(),
-                                            name.clone(),
-                                        ),
+                                        variable,
                                         start: parse_time(start)?,
                                         end,
                                         value: parse_user_value(value, u32::MAX, 10).ok()?,

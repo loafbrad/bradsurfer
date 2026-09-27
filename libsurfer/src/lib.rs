@@ -2077,6 +2077,7 @@ impl SystemState {
                     }
                 }
                 self.invalidate_signal_data_caches();
+                self.notify_host_signal_edits();
             }
             Message::Redo(count) => {
                 let waves = self.user.waves.as_mut()?;
@@ -2104,6 +2105,7 @@ impl SystemState {
                     }
                 }
                 self.invalidate_signal_data_caches();
+                self.notify_host_signal_edits();
             }
             Message::DumpTree => {
                 let waves = self.user.waves.as_ref()?;
