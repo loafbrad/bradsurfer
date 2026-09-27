@@ -22,6 +22,9 @@ use crate::wave_data::WaveData;
 /// Name of the virtual top-level scope holding all user signals.
 pub const USER_SCOPE: &str = "user";
 
+/// Theme color given to newly created signals. Themes without it use their default color.
+pub const USER_SIGNAL_COLOR: &str = "Yellow";
+
 /// A multi-bit edit drawn on the canvas, waiting for the user to type a value into the box
 /// shown inside the signal's row.
 #[derive(Debug, Clone)]
@@ -508,7 +511,23 @@ impl SystemState {
             return;
         };
         if let Some(waves) = self.user.waves.as_mut() {
-            waves.add_variables(&self.translators, vec![variable], None, true, false, None);
+            waves.add_variables(
+                &self.translators,
+                vec![variable.clone()],
+                None,
+                true,
+                false,
+                None,
+            );
+            // Created signals are yellow by default, to tell them apart from the file's.
+            for item in waves.displayed_items.values_mut() {
+                if let DisplayedItem::Variable(displayed) = item
+                    && displayed.variable_ref == variable
+                    && displayed.color.is_none()
+                {
+                    displayed.color = Some(USER_SIGNAL_COLOR.to_string());
+                }
+            }
         }
         self.invalidate_draw_commands();
     }
