@@ -59,6 +59,8 @@ pub mod trace_style;
 pub mod transaction_container;
 pub mod transactions;
 pub mod translation;
+pub mod user_signal_editor;
+pub mod user_signals;
 pub mod util;
 pub mod variable_direction;
 pub mod variable_filter;
@@ -89,6 +91,7 @@ use crate::displayed_item_tree::ItemIndex;
 use crate::displayed_item_tree::TargetPosition;
 use crate::rectangle::RectAnnotation;
 use crate::remote::get_time_table_from_server;
+use crate::user_signals::{NewUserSignalDialog, UserSignals, WaveEditSnap};
 use crate::variable_name_type::VariableNameType;
 
 use std::collections::HashMap;
@@ -302,6 +305,7 @@ struct CanvasState {
     annotation_list: bool,
     selected_annotation: Option<Id>,
     annotation_counter: i32,
+    user_signals: Option<UserSignals>,
 }
 
 impl SystemState {
@@ -2057,6 +2061,12 @@ impl SystemState {
                         waves.annotation_list_visible = prev_state.annotation_list;
                         waves.selected_annotation = prev_state.selected_annotation;
                         waves.annotation_counter = prev_state.annotation_counter;
+                        if let (Some(saved), Some(current)) =
+                            (prev_state.user_signals, waves.user_signals_mut())
+                        {
+                            *current = saved;
+                            waves.cache_generation += 1;
+                        }
                     } else {
                         break;
                     }
@@ -2079,6 +2089,12 @@ impl SystemState {
                         waves.annotation_list_visible = prev_state.annotation_list;
                         waves.selected_annotation = prev_state.selected_annotation;
                         waves.annotation_counter = prev_state.annotation_counter;
+                        if let (Some(saved), Some(current)) =
+                            (prev_state.user_signals, waves.user_signals_mut())
+                        {
+                            *current = saved;
+                            waves.cache_generation += 1;
+                        }
                     } else {
                         break;
                     }
@@ -2439,6 +2455,51 @@ impl SystemState {
                 if let Some(DisplayedItem::Variable(var)) = waves.displayed_items.get_mut(&item) {
                     var.toggle_field_fold(field);
                 }
+            }
+            Message::CreateUserSignal { name, width } => self.create_user_signal(name, width),
+            Message::SetUserSignalValue {
+                variable,
+                start,
+                end,
+                value,
+                continue_stroke,
+            } => {
+                self.set_user_signal_value(&variable, &start, end.as_ref(), value, continue_stroke)
+            }
+            Message::ToggleUserSignal { variable, time } => {
+                self.toggle_user_signal(&variable, &time);
+            }
+            Message::SetWaveEditMode(enabled) => {
+                self.wave_edit_mode = enabled;
+                *self.pending_user_signal_value.borrow_mut() = None;
+            }
+            Message::SetNewUserSignalDialogVisible(visible) => {
+                *self.new_user_signal_dialog.borrow_mut() =
+                    visible.then(NewUserSignalDialog::default);
+            }
+            Message::OpenUserSignalValueEditor {
+                variable,
+                start,
+                end,
+                viewport_idx,
+            } => self.open_user_signal_value_editor(variable, start, end, viewport_idx),
+            Message::SetWaveEditSnap(snap) => {
+                // The reference signal's transitions are only known once it is loaded.
+                if let WaveEditSnap::Signal(variable) = &snap
+                    && let Some(cmd) = self
+                        .user
+                        .waves
+                        .as_mut()
+                        .and_then(|w| w.inner.as_waves_mut())
+                        .and_then(|w| w.load_variables([variable].into_iter()).ok().flatten())
+                {
+                    self.load_variables(cmd);
+                }
+                self.wave_edit_snap = snap;
+            }
+            Message::CommitUserSignalValue => self.commit_pending_user_signal_value(),
+            Message::CloseUserSignalValueEditor => {
+                *self.pending_user_signal_value.borrow_mut() = None;
             }
             Message::SetMouseGestureAnnotation(annotation_kind) => {
                 self.annotation_kind = annotation_kind;

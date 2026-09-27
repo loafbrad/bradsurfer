@@ -23,6 +23,7 @@ use crate::{
     state::UserState,
     time::TimeInputState,
     translation::{TranslatorList, all_translators},
+    user_signals::{NewUserSignalDialog, PendingUserSignalValue, WaveEditSnap},
     wave_container::VariableRef,
     wave_source::{LoadOptions, LoadProgress},
 };
@@ -90,6 +91,15 @@ pub struct SystemState {
     pub(crate) measure_start_location: Option<Pos2>,
 
     pub(crate) annotation_kind: Option<AnnotationKind>,
+
+    /// When enabled, dragging on a user signal's row draws values instead of moving the cursor.
+    pub(crate) wave_edit_mode: bool,
+    /// What edits on the canvas snap to.
+    pub(crate) wave_edit_snap: WaveEditSnap,
+    /// A multi-bit edit waiting for the user to enter a value.
+    pub(crate) pending_user_signal_value: RefCell<Option<PendingUserSignalValue>>,
+    /// The "New signal" dialog, if open.
+    pub(crate) new_user_signal_dialog: RefCell<Option<NewUserSignalDialog>>,
 
     // Egui requires a place to store text field content between frames
     pub(crate) url: RefCell<String>,
@@ -211,6 +221,10 @@ impl SystemState {
             undo_stack: vec![],
             redo_stack: vec![],
             annotation_kind: None,
+            wave_edit_mode: false,
+            wave_edit_snap: WaveEditSnap::default(),
+            pending_user_signal_value: RefCell::new(None),
+            new_user_signal_dialog: RefCell::new(None),
             annotation_id_source: 0,
             click_handled: false,
             toolbar_dragging_group: None,

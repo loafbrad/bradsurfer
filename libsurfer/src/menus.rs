@@ -14,6 +14,7 @@ use crate::hierarchy::{HierarchyStyle, ParameterDisplayLocation, ScopeExpandType
 use crate::keyboard_shortcuts::ShortcutAction;
 use crate::message::MessageTarget;
 use crate::trace_style::TraceStyle;
+use crate::user_signals::WaveEditSnap;
 use crate::wave_container::{FieldRef, VariableRef, VariableRefExt};
 use crate::wave_data::{ScopeType, WaveData};
 use crate::wave_source::LoadOptions;
@@ -737,6 +738,21 @@ impl SystemState {
                             type_limits_available,
                         );
                     });
+            }
+        }
+
+        // While editing signals, any shown signal can be the grid that edits snap to.
+        if self.wave_edit_mode
+            && let DisplayedItem::Variable(variable) = clicked_item
+        {
+            if self.wave_edit_snap == WaveEditSnap::Signal(variable.variable_ref.clone()) {
+                if ui.button("Snap edits to ticks").clicked() {
+                    msgs.push(Message::SetWaveEditSnap(WaveEditSnap::Ticks));
+                }
+            } else if ui.button("Snap edits to this signal").clicked() {
+                msgs.push(Message::SetWaveEditSnap(WaveEditSnap::Signal(
+                    variable.variable_ref.clone(),
+                )));
             }
         }
 

@@ -24,7 +24,7 @@ pub(crate) struct ToolbarGroupSpec {
     pub label: &'static str,
 }
 
-const TOOLBAR_GROUP_SPECS: [ToolbarGroupSpec; 12] = [
+const TOOLBAR_GROUP_SPECS: [ToolbarGroupSpec; 13] = [
     ToolbarGroupSpec {
         id: "menu",
         label: "Menu",
@@ -72,6 +72,10 @@ const TOOLBAR_GROUP_SPECS: [ToolbarGroupSpec; 12] = [
     ToolbarGroupSpec {
         id: "annotations",
         label: "Annotations",
+    },
+    ToolbarGroupSpec {
+        id: "edit",
+        label: "Edit signals",
     },
 ];
 
@@ -179,6 +183,15 @@ impl SystemState {
         }
         if self.user.waves.is_some() {
             visible.insert("time");
+        }
+        if self
+            .user
+            .waves
+            .as_ref()
+            .and_then(|waves| waves.user_signals())
+            .is_some()
+        {
+            visible.insert("edit");
         }
         visible
     }
@@ -311,6 +324,7 @@ impl SystemState {
                     "cxxrtl" => self.draw_toolbar_group_simulation(ui, msgs),
                     "time" => self.draw_toolbar_group_time_input(ui, msgs),
                     "annotations" => self.draw_annotation_group(ui, msgs, wave_loaded),
+                    "edit" => self.draw_toolbar_group_edit(ui, msgs),
                     _ => {
                         unreachable!("Unknown toolbar group id {group_id:?}")
                     }
@@ -695,6 +709,33 @@ impl SystemState {
         } else {
             (icon_unselected, Some(annotation_kind), hover_text)
         }
+    }
+
+    fn draw_toolbar_group_edit(&self, ui: &mut Ui, msgs: &mut Vec<Message>) {
+        add_toolbar_button(
+            ui,
+            msgs,
+            icons::ADD_BOX_LINE,
+            "New signal",
+            Message::SetNewUserSignalDialogVisible(true),
+            true,
+        );
+        let (icon, text) = if self.wave_edit_mode {
+            (icons::EDIT_2_FILL, "Stop editing signals")
+        } else {
+            (
+                icons::EDIT_2_LINE,
+                "Edit signals: drag on a created signal to set its value",
+            )
+        };
+        add_toolbar_button(
+            ui,
+            msgs,
+            icon,
+            text,
+            Message::SetWaveEditMode(!self.wave_edit_mode),
+            true,
+        );
     }
 
     fn draw_annotation_group(&mut self, ui: &mut Ui, msgs: &mut Vec<Message>, wave_loaded: bool) {

@@ -7,6 +7,7 @@ use ftr_parser::types::Transaction;
 use num::BigInt;
 use serde::Deserialize;
 use std::sync::Arc;
+use surfer_translation_types::VariableValue;
 use surver::SurverStatus;
 
 use crate::annotation_list::AnnotationGroup;
@@ -36,6 +37,7 @@ use crate::{
     file_dialog::OpenMode,
     hierarchy::HierarchyStyle,
     time::{TimeStringFormatting, TimeUnit},
+    user_signals::WaveEditSnap,
     variable_filter::VariableIOFilterType,
     variable_name_type::VariableNameType,
     wave_container::{AnalogCacheKey, ScopeRef, VariableRef, WaveContainer},
@@ -518,6 +520,43 @@ pub enum Message {
     ExpandParameterSection,
     AsyncDone(AsyncJob),
     SetMouseGestureAnnotation(Option<AnnotationKind>),
+    /// Create a new user signal, initially 0, and add it to the view.
+    CreateUserSignal {
+        name: String,
+        width: u32,
+    },
+    /// Set the value of a user signal in `[start, end)`, or from `start` onwards if `end` is
+    /// `None`.
+    SetUserSignalValue {
+        variable: VariableRef,
+        start: BigInt,
+        end: Option<BigInt>,
+        value: VariableValue,
+        /// Part of the same paint stroke as the previous edit, so no new undo step is made.
+        #[serde(default)]
+        continue_stroke: bool,
+    },
+    /// Flip a one-bit user signal over the span of constant value containing `time`.
+    ToggleUserSignal {
+        variable: VariableRef,
+        time: BigInt,
+    },
+    /// When enabled, dragging on a user signal's row draws values instead of moving the cursor.
+    SetWaveEditMode(bool),
+    SetNewUserSignalDialogVisible(bool),
+    /// Ask the user for the value of a multi-bit user signal in `[start, end)`.
+    OpenUserSignalValueEditor {
+        variable: VariableRef,
+        start: BigInt,
+        end: Option<BigInt>,
+        #[serde(default)]
+        viewport_idx: usize,
+    },
+    /// Choose what edits on the canvas snap to.
+    SetWaveEditSnap(WaveEditSnap),
+    /// Apply the value typed into the user signal value editor.
+    CommitUserSignalValue,
+    CloseUserSignalValueEditor,
     RectangleAdded {
         time_at_start: BigInt,
         time_at_end: BigInt,

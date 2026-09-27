@@ -12,6 +12,7 @@ use crate::fzcmd::{Command, ParamGreed};
 use crate::hierarchy::HierarchyStyle;
 use crate::message::MessageTarget;
 use crate::transaction_container::StreamScopeRef;
+use crate::user_signals::{UserSignals, WaveEditSnap, parse_user_value};
 use crate::wave_container::{ScopeRef, ScopeRefExt, VariableRef, VariableRefExt};
 use crate::wave_data::ScopeType;
 use crate::wave_source::LoadOptions;
@@ -330,6 +331,10 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
             "toggle_tick_lines",
             "toolbar_set_visible",
             "toolbar_set_row",
+            "signal_create",
+            "signal_set",
+            "edit_mode_toggle",
+            "edit_snap_to",
             "variable_add_from_scope",
             "generator_add_from_stream",
             "variable_set_name_type",
@@ -419,6 +424,19 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
     let state_file = state.user.state_file.clone();
     let show_hierarchy = state.show_hierarchy();
     let show_menu = state.show_menu();
+    let wave_edit_mode = state.wave_edit_mode;
+    let user_signal_names = state
+        .user
+        .waves
+        .as_ref()
+        .and_then(|w| w.user_signals())
+        .map(|s| {
+            s.variables()
+                .into_iter()
+                .map(|v| v.name)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let show_tick_lines = state.show_ticks();
     theme_names.insert(0, "default".to_string());
     Command::NonTerminal(
@@ -565,6 +583,80 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
                     ))
                 }
                 "toggle_menu" => Some(Command::Terminal(Message::SetMenuVisible(!show_menu))),
+                // edit_snap_to <ticks | VARIABLE>
+                "edit_snap_to" => single_word(
+                    std::iter::once("ticks".to_string())
+                        .chain(variables.iter().cloned())
+                        .collect(),
+                    Box::new(|word| {
+                        let snap = if word == "ticks" {
+                            WaveEditSnap::Ticks
+                        } else {
+                            WaveEditSnap::Signal(VariableRef::from_hierarchy_string(word))
+                        };
+                        Some(Command::Terminal(Message::SetWaveEditSnap(snap)))
+                    }),
+                ),
+                "edit_mode_toggle" => {
+                    Some(Command::Terminal(Message::SetWaveEditMode(!wave_edit_mode)))
+                }
+                // signal_create <name> <width>
+                "signal_create" => single_word(
+                    vec![],
+                    Box::new(|args| {
+                        let [name, width] = args.split_whitespace().collect::<Vec<_>>()[..] else {
+                            return None;
+                        };
+                        Some(Command::Terminal(Message::CreateUserSignal {
+                            name: name.to_string(),
+                            width: width.parse().ok()?,
+                        }))
+                    }),
+                ),
+                // signal_set <name> <start> <end or -> <value>
+                "signal_set" => {
+                    let timescale_for_signal_set = timescale.clone();
+                    Some(Command::NonTerminal(
+                        ParamGreed::Word,
+                        user_signal_names.clone(),
+                        Box::new(move |name, _| {
+                            let name = name.to_string();
+                            let timescale = timescale_for_signal_set.clone();
+                            single_word(
+                                vec![],
+                                Box::new(move |args| {
+                                    let [start, end, value] =
+                                        args.split_whitespace().collect::<Vec<_>>()[..]
+                                    else {
+                                        return None;
+                                    };
+                                    let parse_time = |t: &str| {
+                                        if let Some(ts) = &timescale {
+                                            crate::time::parse_time_string_to_ticks(t, ts)
+                                        } else {
+                                            t.parse().ok()
+                                        }
+                                    };
+                                    let end = if end == "-" {
+                                        None
+                                    } else {
+                                        Some(parse_time(end)?)
+                                    };
+                                    Some(Command::Terminal(Message::SetUserSignalValue {
+                                        variable: VariableRef::new(
+                                            UserSignals::scope(),
+                                            name.clone(),
+                                        ),
+                                        start: parse_time(start)?,
+                                        end,
+                                        value: parse_user_value(value, u32::MAX, 10).ok()?,
+                                        continue_stroke: false,
+                                    }))
+                                }),
+                            )
+                        }),
+                    ))
+                }
                 "toggle_side_panel" => Some(Command::Terminal(Message::SetSidePanelVisible(
                     !show_hierarchy,
                 ))),

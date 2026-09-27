@@ -135,6 +135,7 @@ Controls the default row assignment for each toolbar group. Each key is a toolba
 | `cxxrtl` | `0` | integer from `0` to `255` | Row for the CXXRTL simulation controls group. |
 | `time` | `0` | integer from `0` to `255` | Row for the time-input group. |
 | `annotations` | `0` | integer from `0` to `255` | Row for the annotations group. |
+| `edit` | `0` | integer from `0` to `255` | Row for the signal editing group. |
 
 ### `[layout.toolbar.visibility]`
 
@@ -154,6 +155,7 @@ Controls the default visibility of each toolbar group. These values are only use
 | `cxxrtl` | `true` | boolean | Show the CXXRTL simulation controls group by default. |
 | `time` | `true` | boolean | Show the time-input group by default. |
 | `annotations` | `true` | boolean | Show the annotations group by default. |
+| `edit` | `true` | boolean | Show the signal editing group by default. |
 
 Note that some of the groups are not shown if no wave is loaded and in some other situations. For example, the menu group is never shown when the regular menu is shown.
 

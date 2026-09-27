@@ -686,6 +686,7 @@ impl SystemState {
             annotation_list: waves.annotation_list_visible,
             selected_annotation: waves.selected_annotation,
             annotation_counter: waves.annotation_counter,
+            user_signals: waves.user_signals().cloned(),
         }
     }
 

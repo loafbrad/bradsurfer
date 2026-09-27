@@ -79,6 +79,41 @@ Not all commands are available unless a file is loaded. Also, some commands are 
 
   Add a timeline row.
 
+## Created signals
+
+Signals can be created and drawn by hand next to the signals loaded from a waveform file.
+They appear in a top-level scope named ``user`` and are kept in memory only.
+
+* ``signal_create <NAME> <WIDTH>``
+
+  Create a signal ``NAME`` that is ``WIDTH`` bits wide, initially 0, and add it to the view.
+
+* ``signal_set <NAME> <START> <END> <VALUE>``
+
+  Set created signal ``NAME`` to ``VALUE`` from time ``START`` up to (not including) ``END``.
+  Use ``-`` as ``END`` to set the value until the end of the waveform. ``VALUE`` is decimal,
+  or hexadecimal, binary or octal with a ``0x``, ``0b`` or ``0o`` prefix.
+
+* ``edit_mode_toggle``
+
+  Toggle edit mode, for drawing on created signals with the mouse. Edits snap to cells, see
+  ``edit_snap_to``, and a preview of the edit is shown under the pointer.
+
+  One-bit signals are painted: the height of the pointer in the row picks the level (top half
+  high, bottom half low). Clicking paints the cell under the pointer, and dragging paints every
+  cell the pointer passes, following its height. A whole stroke is undone at once.
+
+  For multi-bit signals, dragging selects a range of cells and clicking selects the clicked
+  segment. The value is then typed into a box in the row, in the signal's display format
+  (hexadecimal, binary, octal or decimal) unless prefixed with ``0x``, ``0b``, ``0o`` or ``0d``.
+  Enter sets the value, Escape cancels.
+
+* ``edit_snap_to <ticks | VARIABLE>``
+
+  Choose what edits snap to: the cells between the timeline's tick marks (the default), or
+  the cells between the transitions of ``VARIABLE``, for example a clock. While in edit mode,
+  a signal's context menu also has "Snap edits to this signal".
+
 ## Groups
 
 * ``group_marked [NAME]``
@@ -237,7 +272,7 @@ Not all commands are available unless a file is loaded. Also, some commands are 
 
   ``GROUP`` accepts a group id. Group ids are:
   ``menu``, ``files``, ``copy``, ``zoom``, ``navigation``, ``transitions``,
-  ``add_items``, ``viewports``, ``undo``, ``cxxrtl``, ``time``, ``annotations``.
+  ``add_items``, ``viewports``, ``undo``, ``cxxrtl``, ``time``, ``annotations``, ``edit``.
 
 * ``toolbar_set_row <GROUP> <ROW>``
 

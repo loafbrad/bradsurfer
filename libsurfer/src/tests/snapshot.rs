@@ -3904,3 +3904,458 @@ fn theme_menu_radio_button() {
 
     compare_with_snapshot(&Utf8PathBuf::from("theme_menu_radio_button"), &new);
 }
+
+fn user_signal_value(value: u32) -> surfer_translation_types::VariableValue {
+    surfer_translation_types::VariableValue::BigUint(value.into())
+}
+
+snapshot_ui_with_file_and_msgs! {user_signals_render, "examples/counter.vcd", [
+    Message::AddVariables(vec![VariableRef::from_hierarchy_string("tb.dut.counter")]),
+    Message::CreateUserSignal { name: "enable".to_string(), width: 1 },
+    Message::CreateUserSignal { name: "bus".to_string(), width: 8 },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.enable"),
+        start: BigInt::from(100),
+        end: Some(BigInt::from(300)),
+        value: user_signal_value(1),
+        continue_stroke: false,
+    },
+    Message::ToggleUserSignal {
+        variable: VariableRef::from_hierarchy_string("user.enable"),
+        time: BigInt::from(500),
+    },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(200),
+        end: Some(BigInt::from(450)),
+        value: user_signal_value(0xab),
+        continue_stroke: false,
+    },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(600),
+        end: None,
+        value: user_signal_value(0x12),
+        continue_stroke: false,
+    },
+]}
+
+// The final edit is undone, and a value too wide for the signal is rejected without
+// creating an undo step.
+snapshot_ui_with_file_and_msgs! {user_signals_undo, "examples/counter.vcd", [
+    Message::CreateUserSignal { name: "bus".to_string(), width: 4 },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(100),
+        end: Some(BigInt::from(400)),
+        value: user_signal_value(5),
+        continue_stroke: false,
+    },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(500),
+        end: Some(BigInt::from(700)),
+        value: user_signal_value(9),
+        continue_stroke: false,
+    },
+    Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(0),
+        end: None,
+        value: user_signal_value(0xff),
+        continue_stroke: false,
+    },
+    Message::Undo(1),
+]}
+
+/// Starts a background tokio runtime for the rest of the test, as `theme_menu_radio_button`
+/// does, so that loading waveforms works outside of `render_and_compare`.
+fn enter_test_runtime() -> tokio::runtime::EnterGuard<'static> {
+    let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+    ));
+    std::thread::spawn(move || {
+        runtime.block_on(async {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            }
+        });
+    });
+    runtime.enter()
+}
+
+/// A state showing only the waveform canvas, with a one-bit user signal `en` in the first row
+/// and edit mode on.
+fn wave_edit_state() -> SystemState {
+    let mut state = SystemState::new_default_config()
+        .unwrap()
+        .with_params(StartupParams {
+            waves: Some(WaveSource::File(
+                get_project_root()
+                    .unwrap()
+                    .join("examples")
+                    .join("counter.vcd")
+                    .try_into()
+                    .unwrap(),
+            )),
+            ..Default::default()
+        });
+    wait_for_waves_fully_loaded(&mut state, 10);
+    state.user.show_hierarchy = Some(false);
+    state.user.show_menu = Some(false);
+    state.user.show_toolbar = Some(false);
+    state.user.show_statusbar = Some(false);
+    state.user.show_overview = Some(false);
+    state.user.show_default_timeline = Some(false);
+    state.update(Message::CreateUserSignal {
+        name: "en".to_string(),
+        width: 1,
+    });
+    state.update(Message::SetWaveEditMode(true));
+    state
+}
+
+/// Draws one frame with the given input events and applies the resulting messages.
+fn run_frame(state: &mut SystemState, backend: &mut EguiSkia, events: Vec<Event>) {
+    let mut msgs = vec![];
+    backend.run(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SNAPSHOT_SIZE)),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            ui.set_visuals(state.get_visuals());
+            setup_custom_font(ui.ctx());
+            msgs = state.draw(ui, Some(SNAPSHOT_SIZE));
+        },
+    );
+    // egui requires the texture updates of every frame to be consumed by painting.
+    let mut surface = create_surface((SNAPSHOT_WIDTH as i32, SNAPSHOT_HEIGHT as i32));
+    backend.paint(surface.canvas());
+    for msg in msgs {
+        state.update(msg);
+    }
+}
+
+fn primary_button(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::default(),
+    }
+}
+
+fn en_changes(state: &SystemState) -> Vec<(u64, u32)> {
+    let signals = state.user.waves.as_ref().unwrap().user_signals().unwrap();
+    signals
+        .changes(0)
+        .into_iter()
+        .map(|(t, v)| match v {
+            surfer_translation_types::VariableValue::BigUint(v) => (t, u32::try_from(&v).unwrap()),
+            surfer_translation_types::VariableValue::String(_) => panic!("unexpected string"),
+        })
+        .collect()
+}
+
+/// Canvas y-coordinates in the top and bottom half of the first row.
+fn first_row_halves(state: &SystemState) -> (f32, f32) {
+    let info = &state.user.waves.as_ref().unwrap().drawing_infos[0];
+    let height = info.bottom() - info.top();
+    (info.top() + height * 0.25, info.top() + height * 0.75)
+}
+
+/// Presses at `from`, moves through `path` and releases at the last point.
+fn stroke(state: &mut SystemState, backend: &mut EguiSkia, from: Pos2, path: &[Pos2]) {
+    run_frame(
+        state,
+        backend,
+        vec![Event::PointerMoved(from), primary_button(from, true)],
+    );
+    for pos in path {
+        run_frame(state, backend, vec![Event::PointerMoved(*pos)]);
+    }
+    let end = path.last().copied().unwrap_or(from);
+    run_frame(state, backend, vec![primary_button(end, false)]);
+}
+
+/// A state with edits snapping to the 10 s half periods of `tb.dut.clk`, after one frame
+/// has laid out the rows.
+fn clock_snapped_edit_state(backend: &mut EguiSkia) -> SystemState {
+    let mut state = wave_edit_state();
+    state.update(Message::SetWaveEditSnap(
+        crate::user_signals::WaveEditSnap::Signal(VariableRef::from_hierarchy_string("tb.dut.clk")),
+    ));
+    wait_for_waves_fully_loaded(&mut state, 10);
+    run_frame(&mut state, backend, vec![]);
+    state
+}
+
+#[test]
+fn wave_edit_press_paints_one_cell_at_pointer_height() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = clock_snapped_edit_state(&mut backend);
+    let (high_y, low_y) = first_row_halves(&state);
+
+    // A press in the top half paints the clock half period under the pointer high.
+    let pos = Pos2::new(500.0, high_y);
+    stroke(&mut state, &mut backend, pos, &[]);
+    let changes = en_changes(&state);
+    let [(0, 0), (rise, 1), (fall, 0)] = changes[..] else {
+        panic!("unexpected changes {changes:?}");
+    };
+    assert_eq!((rise % 10, fall - rise), (0, 10), "{changes:?}");
+
+    // A press in the bottom half of the same cell paints it low again.
+    stroke(&mut state, &mut backend, Pos2::new(pos.x, low_y), &[]);
+    assert_eq!(en_changes(&state), [(0, 0)]);
+    assert_eq!(state.user.waves.as_ref().unwrap().cursor, None);
+}
+
+#[test]
+fn wave_edit_drag_paints_range_and_follows_height() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = clock_snapped_edit_state(&mut backend);
+    let (high_y, low_y) = first_row_halves(&state);
+
+    // Dragging at one height paints a flat range, even when the pointer skips cells.
+    stroke(
+        &mut state,
+        &mut backend,
+        Pos2::new(400.0, high_y),
+        &[Pos2::new(550.0, high_y), Pos2::new(700.0, high_y)],
+    );
+    let changes = en_changes(&state);
+    let [(0, 0), (rise, 1), (fall, 0)] = changes[..] else {
+        panic!("unexpected changes {changes:?}");
+    };
+    assert_eq!((rise % 10, fall % 10), (0, 0), "{changes:?}");
+    // 300 px of the 1080 px wide canvas showing 0-800 s, give or take the snapping.
+    assert!((200..=250).contains(&(fall - rise)), "{changes:?}");
+
+    // One stroke is one undo step.
+    state.update(Message::Undo(1));
+    assert_eq!(en_changes(&state), [(0, 0)]);
+
+    // Moving down mid-drag paints the rest of the stroke low.
+    stroke(
+        &mut state,
+        &mut backend,
+        Pos2::new(400.0, high_y),
+        &[
+            Pos2::new(500.0, high_y),
+            Pos2::new(600.0, low_y),
+            Pos2::new(700.0, low_y),
+        ],
+    );
+    let changes = en_changes(&state);
+    let [(0, 0), (rise, 1), (fall, 0)] = changes[..] else {
+        panic!("unexpected changes {changes:?}");
+    };
+    // High from the press to the last sample in the top half (x = 400 to 500, about 75 s),
+    // since the cells up to the first sample in the bottom half are painted low.
+    assert!((70..=100).contains(&(fall - rise)), "{changes:?}");
+    assert_eq!(state.user.waves.as_ref().unwrap().cursor, None);
+}
+
+#[test]
+fn wave_edit_multi_bit_click_opens_value_box_in_display_radix() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = wave_edit_state();
+    // Replace the one-bit signal `en` with an 8-bit one in the first row.
+    let en = *state
+        .user
+        .waves
+        .as_ref()
+        .unwrap()
+        .displayed_items
+        .keys()
+        .next()
+        .unwrap();
+    state.update(Message::RemoveItems(vec![en]));
+    state.update(Message::CreateUserSignal {
+        name: "bus".to_string(),
+        width: 8,
+    });
+    run_frame(&mut state, &mut backend, vec![]);
+    let (y, _) = first_row_halves(&state);
+
+    stroke(&mut state, &mut backend, Pos2::new(500.0, y), &[]);
+    {
+        let pending = state.pending_user_signal_value.borrow();
+        let pending = pending.as_ref().expect("value box should be open");
+        assert_eq!(pending.variable.name, "bus");
+        // The whole initial segment was clicked, and the default format is hexadecimal.
+        assert_eq!(
+            (pending.start.clone(), pending.end.clone()),
+            (BigInt::from(0), None)
+        );
+        assert_eq!((pending.radix, pending.text.as_str()), (16, "0"));
+    }
+
+    state
+        .pending_user_signal_value
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .text = "ab".to_string();
+    state.update(Message::CommitUserSignalValue);
+    let signals = state.user.waves.as_ref().unwrap().user_signals().unwrap();
+    assert_eq!(signals.changes(1), vec![(0, user_signal_value(0xab))]);
+}
+
+/// Draws one frame with the given input events and compares it with snapshot `name`.
+fn compare_frame_with_snapshot(
+    state: &mut SystemState,
+    backend: &mut EguiSkia,
+    events: Vec<Event>,
+    name: &str,
+) {
+    let mut msgs = vec![];
+    backend.run(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SNAPSHOT_SIZE)),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            ui.set_visuals(state.get_visuals());
+            setup_custom_font(ui.ctx());
+            msgs = state.draw(ui, Some(SNAPSHOT_SIZE));
+        },
+    );
+    let mut surface = create_surface((SNAPSHOT_WIDTH as i32, SNAPSHOT_HEIGHT as i32));
+    surface.canvas().clear(egui_skia_renderer::Color::BLACK);
+    backend.paint(surface.canvas());
+    for msg in msgs {
+        state.update(msg);
+    }
+    let data = surface
+        .image_snapshot()
+        .encode(None, EncodedImageFormat::PNG, None)
+        .expect("Failed to encode image");
+    let new = image::load_from_memory(&data).expect("Failed to decode png");
+    compare_with_snapshot(&Utf8PathBuf::from(name), &new);
+}
+
+/// Clock-snapped editing of a one-bit signal `en` (first row) and an 8-bit signal `bus`
+/// (second row), with the clock shown in the third row.
+fn edit_preview_state(backend: &mut EguiSkia) -> SystemState {
+    let mut state = clock_snapped_edit_state(backend);
+    state.update(Message::CreateUserSignal {
+        name: "bus".to_string(),
+        width: 8,
+    });
+    state.update(Message::AddVariables(vec![
+        VariableRef::from_hierarchy_string("tb.dut.clk"),
+    ]));
+    wait_for_waves_fully_loaded(&mut state, 10);
+    run_frame(&mut state, backend, vec![]);
+    state
+}
+
+fn row_center(state: &SystemState, row: usize) -> f32 {
+    let info = &state.user.waves.as_ref().unwrap().drawing_infos[row];
+    (info.top() + info.bottom()) / 2.
+}
+
+/// `edit_preview_state` snapping to the timeline ticks, whose wider cells make the preview
+/// easy to see, with `en` high from 300 s to 500 s.
+fn tick_preview_state(backend: &mut EguiSkia) -> SystemState {
+    let mut state = edit_preview_state(backend);
+    state.update(Message::SetWaveEditSnap(
+        crate::user_signals::WaveEditSnap::Ticks,
+    ));
+    state.update(Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.en"),
+        start: BigInt::from(300),
+        end: Some(BigInt::from(500)),
+        value: user_signal_value(1),
+        continue_stroke: false,
+    });
+    run_frame(&mut state, backend, vec![]);
+    state
+}
+
+/// Pixel x of `time` on the 1080 px wide canvas (starting at x = 200) showing 0-800 s.
+fn canvas_x(time: f32) -> f32 {
+    200. + time / 800. * 1080.
+}
+
+#[test]
+fn wave_edit_hover_preview_one_bit() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = tick_preview_state(&mut backend);
+    let (high_y, _) = first_row_halves(&state);
+    // Painting high where `en` is low: a dotted high level with edges up and down.
+    compare_frame_with_snapshot(
+        &mut state,
+        &mut backend,
+        vec![Event::PointerMoved(Pos2::new(canvas_x(160.), high_y))],
+        "wave_edit_hover_preview_one_bit",
+    );
+}
+
+#[test]
+fn wave_edit_hover_preview_erase() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = tick_preview_state(&mut backend);
+    let (_, low_y) = first_row_halves(&state);
+    // Painting low inside the high stretch: the high part under the cell is darkened.
+    compare_frame_with_snapshot(
+        &mut state,
+        &mut backend,
+        vec![Event::PointerMoved(Pos2::new(canvas_x(410.), low_y))],
+        "wave_edit_hover_preview_erase",
+    );
+}
+
+#[test]
+fn wave_edit_hover_preview_multi_bit() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = edit_preview_state(&mut backend);
+    state.update(Message::SetUserSignalValue {
+        variable: VariableRef::from_hierarchy_string("user.bus"),
+        start: BigInt::from(300),
+        end: Some(BigInt::from(600)),
+        value: user_signal_value(0x5a),
+        continue_stroke: false,
+    });
+    let y = row_center(&state, 1);
+    compare_frame_with_snapshot(
+        &mut state,
+        &mut backend,
+        vec![Event::PointerMoved(Pos2::new(700.0, y))],
+        "wave_edit_hover_preview_multi_bit",
+    );
+}
+
+#[test]
+fn wave_edit_value_box() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = edit_preview_state(&mut backend);
+    let y = row_center(&state, 1);
+    // Drag across part of the bus row, then let the value box lay itself out.
+    stroke(
+        &mut state,
+        &mut backend,
+        Pos2::new(450.0, y),
+        &[Pos2::new(550.0, y), Pos2::new(650.0, y)],
+    );
+    // egui fades new areas in over a few frames.
+    for _ in 0..20 {
+        run_frame(&mut state, &mut backend, vec![]);
+    }
+    compare_frame_with_snapshot(&mut state, &mut backend, vec![], "wave_edit_value_box");
+}

@@ -10,6 +10,7 @@ use crate::cxxrtl_container::CxxrtlContainer;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::fst_export::FstExport;
 use crate::time::{TimeScale, TimeUnit};
+use crate::user_signals::UserSignals;
 use crate::wellen::{BodyResult, LoadSignalsCmd, LoadSignalsResult, WellenContainer};
 
 pub type FieldRef = surfer_translation_types::FieldRef<VarId, ScopeId>;
@@ -47,6 +48,8 @@ pub enum VarId {
     #[default]
     None,
     Wellen(wellen::VarRef),
+    /// Index into [`crate::user_signals::UserSignals`].
+    User(u32),
 }
 
 /// A backend-specific, numeric reference for fast access to the associated signal data.
@@ -56,12 +59,16 @@ pub enum SignalId {
     #[default]
     None,
     Wellen(wellen::SignalRef),
+    /// Index into [`crate::user_signals::UserSignals`].
+    User(u32),
 }
 
 /// Backend-agnostic enum for accessing signal data.
 /// Variants provide iteration over signal changes.
 pub enum SignalAccessor {
     Wellen(crate::wellen::WellenSignalAccessor),
+    /// A snapshot of a user signal's changes.
+    User(Vec<(u64, VariableValue)>),
     // Future: Cxxrtl(CxxrtlSignalAccessor),
 }
 
@@ -70,6 +77,7 @@ impl SignalAccessor {
     pub fn iter_changes(&self) -> Box<dyn Iterator<Item = (u64, VariableValue)> + '_> {
         match self {
             SignalAccessor::Wellen(accessor) => accessor.iter_changes(),
+            SignalAccessor::User(changes) => Box::new(changes.iter().cloned()),
         }
     }
 }
@@ -492,10 +500,29 @@ impl WaveContainer {
         }
     }
 
+    /// Signals created by the user. Only supported for waveforms loaded through wellen.
+    #[must_use]
+    pub fn user_signals(&self) -> Option<&UserSignals> {
+        match self {
+            WaveContainer::Wellen(f) => Some(&f.user_signals),
+            WaveContainer::Empty | WaveContainer::Cxxrtl(_) => None,
+        }
+    }
+
+    pub fn user_signals_mut(&mut self) -> Option<&mut UserSignals> {
+        match self {
+            WaveContainer::Wellen(f) => Some(&mut f.user_signals),
+            WaveContainer::Empty | WaveContainer::Cxxrtl(_) => None,
+        }
+    }
+
     pub fn signal_accessor(&self, signal_id: SignalId) -> Result<SignalAccessor> {
         match (self, signal_id) {
             (WaveContainer::Wellen(f), SignalId::Wellen(signal_ref)) => {
                 Ok(SignalAccessor::Wellen(f.signal_accessor(signal_ref)?))
+            }
+            (WaveContainer::Wellen(f), SignalId::User(idx)) => {
+                Ok(SignalAccessor::User(f.user_signals.changes(idx as usize)))
             }
             _ => {
                 bail!("Invalid signal accessor combination");
@@ -505,7 +532,10 @@ impl WaveContainer {
     /// Get the `SignalId` for a variable (canonical signal identity for cache keys)
     pub fn signal_id(&self, variable: &VariableRef) -> Result<SignalId> {
         match self {
-            WaveContainer::Wellen(f) => Ok(SignalId::Wellen(f.signal_ref(variable)?)),
+            WaveContainer::Wellen(f) => match f.user_signals.index_of(variable) {
+                Some(idx) => Ok(SignalId::User(idx as u32)),
+                None => Ok(SignalId::Wellen(f.signal_ref(variable)?)),
+            },
             WaveContainer::Empty => {
                 bail!("No signal data");
             }
@@ -521,6 +551,9 @@ impl WaveContainer {
         match (self, signal_id) {
             (WaveContainer::Wellen(f), SignalId::Wellen(signal_ref)) => {
                 f.is_signal_loaded(*signal_ref)
+            }
+            (WaveContainer::Wellen(f), SignalId::User(idx)) => {
+                f.user_signals.get(*idx as usize).is_some()
             }
             _ => false,
         }

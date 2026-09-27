@@ -15,6 +15,7 @@ use wellen::{
 };
 
 use crate::time::{TimeScale, TimeUnit};
+use crate::user_signals::UserSignals;
 use crate::variable_direction::VariableDirectionExt;
 use crate::variable_index::VariableIndexExt;
 use crate::wave_container::{
@@ -43,6 +44,8 @@ pub struct WellenContainer {
     source: Option<SignalSource>,
     unique_id: u64,
     body_loaded: bool,
+    /// Signals created by the user, shown in a virtual top-level scope.
+    pub(crate) user_signals: UserSignals,
 }
 
 /// Returned by `load_variables` if we want to load the variables on a background thread.
@@ -187,6 +190,7 @@ impl WellenContainer {
             source: None,
             unique_id,
             body_loaded: false,
+            user_signals: UserSignals::default(),
         }
     }
 
@@ -261,7 +265,14 @@ impl WellenContainer {
 
     #[must_use]
     pub fn variable_names(&self) -> Vec<String> {
-        self.vars.clone()
+        let mut names = self.vars.clone();
+        names.extend(
+            self.user_signals
+                .variables()
+                .iter()
+                .map(VariableRefExt::full_path_string),
+        );
+        names
     }
 
     fn lookup_scope(&self, scope: &ScopeRef) -> Option<wellen::ScopeRef> {
@@ -286,10 +297,15 @@ impl WellenContainer {
 
     #[must_use]
     pub fn variables(&self) -> Vec<VariableRef> {
-        self.varrefs.clone()
+        let mut variables = self.varrefs.clone();
+        variables.extend(self.user_signals.variables());
+        variables
     }
 
     pub fn variables_in_scope(&self, scope_ref: &ScopeRef) -> Vec<VariableRef> {
+        if UserSignals::is_user_scope(scope_ref) {
+            return self.user_signals.variables();
+        }
         let h = &self.hierarchy;
         // special case of an empty scope means that we want to variables that are part of the toplevel
         if scope_ref.has_empty_strs() {
@@ -397,6 +413,9 @@ impl WellenContainer {
 
     #[must_use]
     pub fn update_variable_ref(&self, variable: &VariableRef) -> Option<VariableRef> {
+        if UserSignals::is_user_scope(&variable.path) {
+            return self.user_signals.update_variable_ref(variable);
+        }
         // IMPORTANT: lookup by name! Also consider index if a single-digit index is provided.
         let h = &self.hierarchy;
         let index = variable
@@ -458,6 +477,7 @@ impl WellenContainer {
     pub(crate) fn get_var_ref(&self, r: &VariableRef) -> Result<VarRef> {
         match r.id {
             VarId::Wellen(id) => Ok(id),
+            VarId::User(_) => bail!("{r:?} is a user signal, not a wellen variable"),
             VarId::None => {
                 let h = &self.hierarchy;
                 let index = r.index.as_ref().map(|i| wellen::VarIndex::new(*i, *i));
@@ -582,6 +602,9 @@ impl WellenContainer {
         variable: &VariableRef,
         time: &BigUint,
     ) -> Result<Option<QueryResult>> {
+        if let Some(idx) = self.user_signals.index_of(variable) {
+            return Ok(self.user_signals.query(idx, time));
+        }
         let h = &self.hierarchy;
         // find variable from string
         let var_ref = self.get_var_ref(variable)?;
@@ -659,12 +682,20 @@ impl WellenContainer {
     #[must_use]
     pub fn root_scopes(&self) -> Vec<ScopeRef> {
         let h = &self.hierarchy;
-        h.scopes()
+        let mut scopes = h
+            .scopes()
             .map(|id| ScopeRef::from_strs_with_id(&[h[id].name(h)], ScopeId::Wellen(id)))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        if !self.user_signals.is_empty() {
+            scopes.push(UserSignals::scope());
+        }
+        scopes
     }
 
     pub fn child_scopes(&self, scope_ref: &ScopeRef) -> Result<Vec<ScopeRef>> {
+        if UserSignals::is_user_scope(scope_ref) {
+            return Ok(vec![]);
+        }
         let h = &self.hierarchy;
         let scope = match self.lookup_scope(scope_ref) {
             Some(id) => &h[id],
@@ -678,6 +709,9 @@ impl WellenContainer {
 
     #[must_use]
     pub fn scope_exists(&self, scope: &ScopeRef) -> bool {
+        if UserSignals::is_user_scope(scope) {
+            return !self.user_signals.is_empty();
+        }
         scope.has_empty_strs() || self.has_scope(scope)
     }
 
@@ -752,6 +786,9 @@ impl WellenContainer {
     }
 
     pub fn variable_to_meta(&self, variable: &VariableRef) -> Result<VariableMeta> {
+        if self.user_signals.index_of(variable).is_some() {
+            return self.user_signals.meta(variable);
+        }
         let var = self.get_var(variable)?;
         let encoding = match var.signal_encoding(&self.hierarchy) {
             SignalEncoding::String => VariableEncoding::String,

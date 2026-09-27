@@ -31,6 +31,7 @@ use crate::tooltips::handle_transaction_tooltip;
 use crate::trace_style::{TraceStyle, TraceValue};
 use crate::transaction_container::{TransactionRef, TransactionStreamRef};
 use crate::translation::{TranslationResultExt, TranslatorList, ValueKindExt, VariableInfoExt};
+use crate::user_signal_editor::EditCanvas;
 use crate::view::{DrawConfig, DrawingContext};
 use crate::viewport::Viewport;
 use crate::wave_container::{QueryResult, VariableRefExt};
@@ -774,7 +775,21 @@ impl SystemState {
 
         let modifiers = ui.input(|i| i.modifiers);
         let do_measure = self.do_measure(&modifiers);
-        let handle_cursor = !modifiers.command
+        let edit_ticks = match &self.draw_data.borrow()[viewport_idx] {
+            Some(CachedDrawData::WaveDrawData(draw_data)) => draw_data.ticks.clone(),
+            _ => vec![],
+        };
+        let edit_canvas = EditCanvas {
+            waves,
+            to_screen,
+            row_offset: self.default_timeline_offset() - waves.scroll_offset,
+            frame_width,
+            viewport_idx,
+            ticks: &edit_ticks,
+        };
+        let wave_edit = self.handle_wave_edit_input(ui, &response, &edit_canvas, msgs);
+        let handle_cursor = !wave_edit.consumed
+            && !modifiers.command
             && ((response.dragged_by(PointerButton::Primary) && !do_measure)
                 || response.clicked_by(PointerButton::Primary));
         let needs_pointer_pos_canvas = self.annotation_kind.is_none() || handle_cursor;
@@ -822,7 +837,7 @@ impl SystemState {
 
         // Check for measure drag starting. Snap the start X to the nearest transition
         // using the same logic as when placing cursors, but keep the original Y.
-        if do_measure && response.drag_started_by(PointerButton::Primary) {
+        if do_measure && !wave_edit.consumed && response.drag_started_by(PointerButton::Primary) {
             let press_origin_local = ui
                 .input(|i| i.pointer.press_origin())
                 .map(|p| to_screen.inverse().transform_pos(p));
@@ -897,6 +912,10 @@ impl SystemState {
         let viewport = &waves.viewports[viewport_idx];
         waves.draw_graphics(&mut ctx, viewport, &self.user.config.theme);
 
+        if let Some(preview) = &wave_edit.preview {
+            preview.draw(ctx.painter);
+        }
+
         //Draw cursor and allow measure if no annotation is currently being drawn
         if self.annotation_kind.is_none() {
             waves.draw_cursor(&self.user.config.theme, &mut ctx, viewport);
@@ -968,6 +987,8 @@ impl SystemState {
         );
 
         self.handle_canvas_context_menu(&response, waves, to_screen, &mut ctx, msgs, viewport_idx);
+
+        self.draw_user_signal_value_box(ui, &edit_canvas, msgs);
     }
 
     fn draw_wave_data(

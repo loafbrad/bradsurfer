@@ -281,6 +281,8 @@ impl SystemState {
             self.draw_load_url(ui, &mut msgs);
         }
 
+        self.draw_new_user_signal_dialog(ui, &mut msgs);
+
         if self.user.show_server_file_window {
             self.draw_surver_file_window(ui, &mut msgs);
         }

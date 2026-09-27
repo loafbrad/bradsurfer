@@ -21,6 +21,7 @@ use crate::item_drawing_info::ItemDrawingInfo;
 use crate::transaction_container::{StreamScopeRef, TransactionRef, TransactionStreamRef};
 use crate::transactions::calculate_rows_of_stream;
 use crate::translation::{DynTranslator, TranslatorList, VariableInfoExt};
+use crate::user_signals::UserSignals;
 use crate::variable_name_type::VariableNameType;
 use crate::viewport::Viewport;
 use crate::wave_container::{
@@ -214,12 +215,20 @@ impl WaveData {
     #[must_use]
     pub fn update_with_waves(
         mut self,
-        new_waves: Box<WaveContainer>,
+        mut new_waves: Box<WaveContainer>,
         source: WaveSource,
         format: WaveFormat,
         translators: &TranslatorList,
         keep_unavailable: bool,
     ) -> (WaveData, Option<LoadSignalsCmd>) {
+        // User signals are not part of the waveform file, so carry them over to the new data
+        // before displayed items are checked against it.
+        if let (Some(old), Some(new)) = (
+            self.user_signals_mut().map(std::mem::take),
+            new_waves.user_signals_mut(),
+        ) {
+            *new = old;
+        }
         let active_scope = self.active_scope.take().filter(|m| {
             if let ScopeType::WaveScope(w) = m {
                 new_waves.scope_exists(w)
@@ -350,6 +359,15 @@ impl WaveData {
 
     /// Needs to be called after `update_with`, once the new number of timestamps is available in
     /// the inner `WaveContainer`.
+    #[must_use]
+    pub fn user_signals(&self) -> Option<&UserSignals> {
+        self.inner.as_waves()?.user_signals()
+    }
+
+    pub fn user_signals_mut(&mut self) -> Option<&mut UserSignals> {
+        self.inner.as_waves_mut()?.user_signals_mut()
+    }
+
     pub fn update_viewports(&mut self) {
         if let Some(old_max_timestamp) = std::mem::take(&mut self.old_max_timestamp) {
             // FIXME: I'm not sure if Defaulting to 1 time step is the right thing to do if we

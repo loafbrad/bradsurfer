@@ -65,6 +65,7 @@ undo = 0
 cxxrtl = 0
 time = 0
 annotations = 0
+edit = 0
 
 [layout.toolbar.visibility]
 menu = true
@@ -79,6 +80,7 @@ undo = true
 cxxrtl = true
 time = true
 annotations = true
+edit = true
 
 [gesture]
 size = 300
