@@ -886,6 +886,9 @@ impl SystemState {
             self.draw_background(drawing_info, background_offset, &ctx, background_color);
         }
 
+        // Part of the background, so the waveform is drawn on top of it.
+        self.draw_edited_spans(ui, &edit_canvas, ctx.painter);
+
         #[cfg(feature = "performance_plot")]
         self.timing.borrow_mut().start("Wave drawing");
 
@@ -911,8 +914,6 @@ impl SystemState {
 
         let viewport = &waves.viewports[viewport_idx];
         waves.draw_graphics(&mut ctx, viewport, &self.user.config.theme);
-
-        self.draw_edited_spans(ui, &edit_canvas, ctx.painter);
 
         if let Some(preview) = &wave_edit.preview {
             preview.draw(ctx.painter);

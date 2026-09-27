@@ -173,8 +173,11 @@ impl EditPreview {
     }
 }
 
-/// Pixels between the diagonal stripes marking edited stretches.
-const STRIPE_SPACING: f32 = 10.;
+/// Width of one light and one dark diagonal band marking edited stretches, in pixels. The two
+/// bands are equally wide.
+const STRIPE_SPACING: f32 = 12.;
+/// Color of the light bands, drawn over the row background and behind the waveform.
+const STRIPE_COLOR: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
 /// How fast the stripes move, in pixels per second.
 const STRIPE_SPEED: f32 = 12.;
 
@@ -491,7 +494,8 @@ impl SystemState {
     }
 
     /// Marks the stretches where edits make signals from the file differ from the file with
-    /// moving diagonal stripes. Edits that match the file's values are not marked.
+    /// moving diagonal gray bands in the row background, behind the waveform. Edits that match
+    /// the file's values are not marked.
     pub(crate) fn draw_edited_spans(&self, ui: &Ui, c: &EditCanvas, painter: &egui::Painter) {
         let Some(container) = c.waves.inner.as_waves() else {
             return;
@@ -506,7 +510,6 @@ impl SystemState {
         let from = to_u64(c.time_at(0.));
         let to = to_u64(c.time_at(c.frame_width)).saturating_add(1);
         let phase = (ui.input(|i| i.time) as f32 * STRIPE_SPEED).rem_euclid(STRIPE_SPACING);
-        let stroke = Stroke::new(2., EDIT_COLOR.gamma_multiply(0.45));
         let canvas_height = c.to_screen.to().height();
 
         let mut drawn = false;
@@ -530,20 +533,24 @@ impl SystemState {
                 }
                 drawn = true;
                 let clipped = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-                clipped.rect_filled(rect, 0., EDIT_COLOR.gamma_multiply(0.08));
-                // Lines rising to the right, on a grid shared by all stretches so the pattern
+                // Light bands rising to the right, half of each period wide so light and dark
+                // bands are equal. They sit on a grid shared by all stretches so the pattern
                 // lines up across them and moves smoothly.
                 let height = rect.height();
+                let band = STRIPE_SPACING / 2.;
                 let first = rect.left() - height;
                 let mut x = first - (first - phase).rem_euclid(STRIPE_SPACING);
                 while x < rect.right() {
-                    clipped.line_segment(
-                        [
+                    clipped.add(egui::Shape::convex_polygon(
+                        vec![
                             Pos2::new(x, rect.bottom()),
+                            Pos2::new(x + band, rect.bottom()),
+                            Pos2::new(x + band + height, rect.top()),
                             Pos2::new(x + height, rect.top()),
                         ],
-                        stroke,
-                    );
+                        STRIPE_COLOR,
+                        Stroke::NONE,
+                    ));
                     x += STRIPE_SPACING;
                 }
             }
