@@ -4,11 +4,12 @@ use chrono::prelude::{DateTime, Utc};
 use eyre::{Result, bail};
 use num::BigUint;
 use serde::{Deserialize, Serialize};
-use surfer_translation_types::VariableValue;
+use surfer_translation_types::{VariableEncoding, VariableValue};
 
 use crate::cxxrtl_container::CxxrtlContainer;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::fst_export::FstExport;
+use crate::signal_edits::SignalEdits;
 use crate::time::{TimeScale, TimeUnit};
 use crate::user_signals::UserSignals;
 use crate::wellen::{BodyResult, LoadSignalsCmd, LoadSignalsResult, WellenContainer};
@@ -67,8 +68,8 @@ pub enum SignalId {
 /// Variants provide iteration over signal changes.
 pub enum SignalAccessor {
     Wellen(crate::wellen::WellenSignalAccessor),
-    /// A snapshot of a user signal's changes.
-    User(Vec<(u64, VariableValue)>),
+    /// A snapshot of a signal's changes, for user signals and edited signals.
+    Changes(Vec<(u64, VariableValue)>),
     // Future: Cxxrtl(CxxrtlSignalAccessor),
 }
 
@@ -77,7 +78,7 @@ impl SignalAccessor {
     pub fn iter_changes(&self) -> Box<dyn Iterator<Item = (u64, VariableValue)> + '_> {
         match self {
             SignalAccessor::Wellen(accessor) => accessor.iter_changes(),
-            SignalAccessor::User(changes) => Box::new(changes.iter().cloned()),
+            SignalAccessor::Changes(changes) => Box::new(changes.iter().cloned()),
         }
     }
 }
@@ -500,6 +501,62 @@ impl WaveContainer {
         }
     }
 
+    /// Edits of signals loaded from the file, together with the id of this container that
+    /// the edits' signal references belong to.
+    #[must_use]
+    pub fn signal_edits(&self) -> Option<(u64, &SignalEdits)> {
+        match self {
+            WaveContainer::Wellen(f) => Some((f.unique_id(), &f.signal_edits)),
+            WaveContainer::Empty | WaveContainer::Cxxrtl(_) => None,
+        }
+    }
+
+    pub fn signal_edits_mut(&mut self) -> Option<&mut SignalEdits> {
+        match self {
+            WaveContainer::Wellen(f) => Some(&mut f.signal_edits),
+            WaveContainer::Empty | WaveContainer::Cxxrtl(_) => None,
+        }
+    }
+
+    /// Whether `variable` has been edited (for file signals, through any of its aliases).
+    #[must_use]
+    pub fn is_edited(&self, variable: &VariableRef) -> bool {
+        match (self, self.signal_id(variable)) {
+            (WaveContainer::Wellen(f), Ok(SignalId::Wellen(signal_ref))) => {
+                f.signal_edits.is_edited(signal_ref)
+            }
+            _ => false,
+        }
+    }
+
+    /// The time ranges within `[from, to)` where edits make `variable`, a signal from the
+    /// file, differ from the file's values.
+    #[must_use]
+    pub fn changed_spans(&self, variable: &VariableRef, from: u64, to: u64) -> Vec<(u64, u64)> {
+        match self {
+            WaveContainer::Wellen(f) if f.user_signals.index_of(variable).is_none() => {
+                f.changed_spans(variable, from, to)
+            }
+            _ => vec![],
+        }
+    }
+
+    /// The width of `variable` if it can be edited: a user signal, or a loaded bit-vector
+    /// signal from the file that is not a parameter or event.
+    #[must_use]
+    pub fn editable_width(&self, variable: &VariableRef) -> Option<u32> {
+        let signals = self.user_signals()?;
+        if let Some(idx) = signals.index_of(variable) {
+            return signals.get(idx).map(|s| s.width);
+        }
+        let meta = self.variable_meta(variable).ok()?;
+        let editable = matches!(meta.encoding, VariableEncoding::BitVector)
+            && !meta.is_parameter()
+            && !meta.is_event()
+            && self.is_signal_loaded(&self.signal_id(variable).ok()?);
+        meta.num_bits.filter(|w| editable && *w > 0)
+    }
+
     /// Signals created by the user. Only supported for waveforms loaded through wellen.
     #[must_use]
     pub fn user_signals(&self) -> Option<&UserSignals> {
@@ -519,11 +576,19 @@ impl WaveContainer {
     pub fn signal_accessor(&self, signal_id: SignalId) -> Result<SignalAccessor> {
         match (self, signal_id) {
             (WaveContainer::Wellen(f), SignalId::Wellen(signal_ref)) => {
-                Ok(SignalAccessor::Wellen(f.signal_accessor(signal_ref)?))
+                let accessor = f.signal_accessor(signal_ref)?;
+                if f.signal_edits.is_edited(signal_ref) {
+                    Ok(SignalAccessor::Changes(
+                        f.signal_edits
+                            .merged_changes(signal_ref, accessor.iter_changes()),
+                    ))
+                } else {
+                    Ok(SignalAccessor::Wellen(accessor))
+                }
             }
-            (WaveContainer::Wellen(f), SignalId::User(idx)) => {
-                Ok(SignalAccessor::User(f.user_signals.changes(idx as usize)))
-            }
+            (WaveContainer::Wellen(f), SignalId::User(idx)) => Ok(SignalAccessor::Changes(
+                f.user_signals.changes(idx as usize),
+            )),
             _ => {
                 bail!("Invalid signal accessor combination");
             }
@@ -564,7 +629,35 @@ impl WaveContainer {
     /// them) that can later be written out to an FST file, e.g. from a background task.
     pub(crate) fn prepare_fst_export(&self, variables: &[VariableRef]) -> Result<FstExport> {
         match self {
-            WaveContainer::Wellen(f) => Ok(FstExport::Wellen(f.prepare_fst_export(variables)?)),
+            WaveContainer::Wellen(f) => {
+                // Exports hold the file's data: user signals are not part of it, and edits of
+                // file signals are not applied yet.
+                let (user, file): (Vec<_>, Vec<_>) = variables
+                    .iter()
+                    .cloned()
+                    .partition(|v| f.user_signals.index_of(v).is_some());
+                if !user.is_empty() {
+                    tracing::warn!(
+                        "Created signals are not exported: {}",
+                        user.iter()
+                            .map(|v| v.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                let edited: Vec<_> = file
+                    .iter()
+                    .filter(|v| self.is_edited(v))
+                    .map(VariableRefExt::full_path_string)
+                    .collect();
+                if !edited.is_empty() {
+                    tracing::warn!(
+                        "Edits are not exported, the file's values are written for: {}",
+                        edited.join(", ")
+                    );
+                }
+                Ok(FstExport::Wellen(f.prepare_fst_export(&file)?))
+            }
             WaveContainer::Empty => {
                 bail!("No waveform data to export");
             }

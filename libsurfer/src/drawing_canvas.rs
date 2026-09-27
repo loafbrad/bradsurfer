@@ -912,6 +912,8 @@ impl SystemState {
         let viewport = &waves.viewports[viewport_idx];
         waves.draw_graphics(&mut ctx, viewport, &self.user.config.theme);
 
+        self.draw_edited_spans(ui, &edit_canvas, ctx.painter);
+
         if let Some(preview) = &wave_edit.preview {
             preview.draw(ctx.painter);
         }

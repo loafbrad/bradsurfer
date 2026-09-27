@@ -687,6 +687,11 @@ impl SystemState {
             selected_annotation: waves.selected_annotation,
             annotation_counter: waves.annotation_counter,
             user_signals: waves.user_signals().cloned(),
+            signal_edits: waves
+                .inner
+                .as_waves()
+                .and_then(|w| w.signal_edits())
+                .map(|(id, edits)| (id, edits.clone())),
         }
     }
 

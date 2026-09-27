@@ -335,6 +335,8 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
             "signal_set",
             "edit_mode_toggle",
             "edit_snap_to",
+            "signal_revert",
+            "signal_revert_all",
             "variable_add_from_scope",
             "generator_add_from_stream",
             "variable_set_name_type",
@@ -583,6 +585,16 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
                     ))
                 }
                 "toggle_menu" => Some(Command::Terminal(Message::SetMenuVisible(!show_menu))),
+                // signal_revert <VARIABLE>
+                "signal_revert" => single_word(
+                    variables.clone(),
+                    Box::new(|word| {
+                        Some(Command::Terminal(Message::RevertSignalEdits(Some(
+                            VariableRef::from_hierarchy_string(word),
+                        ))))
+                    }),
+                ),
+                "signal_revert_all" => Some(Command::Terminal(Message::RevertSignalEdits(None))),
                 // edit_snap_to <ticks | VARIABLE>
                 "edit_snap_to" => single_word(
                     std::iter::once("ticks".to_string())
@@ -642,7 +654,7 @@ pub(crate) fn get_parser(state: &SystemState) -> Command<Message> {
                                     } else {
                                         Some(parse_time(end)?)
                                     };
-                                    Some(Command::Terminal(Message::SetUserSignalValue {
+                                    Some(Command::Terminal(Message::SetSignalValue {
                                         variable: VariableRef::new(
                                             UserSignals::scope(),
                                             name.clone(),

@@ -525,9 +525,11 @@ pub enum Message {
         name: String,
         width: u32,
     },
-    /// Set the value of a user signal in `[start, end)`, or from `start` onwards if `end` is
-    /// `None`.
-    SetUserSignalValue {
+    /// Set the value of a user signal, or of a bit-vector signal from the file, in
+    /// `[start, end)`, or from `start` onwards if `end` is `None`. Edits of file signals also
+    /// apply to their aliases and can be reverted with [`Message::RevertSignalEdits`].
+    #[serde(alias = "SetUserSignalValue")]
+    SetSignalValue {
         variable: VariableRef,
         start: BigInt,
         end: Option<BigInt>,
@@ -552,6 +554,9 @@ pub enum Message {
         #[serde(default)]
         viewport_idx: usize,
     },
+    /// Remove the edits of a signal from the file (and its aliases), or of all signals if
+    /// `None`, restoring the values in the file.
+    RevertSignalEdits(Option<VariableRef>),
     /// Choose what edits on the canvas snap to.
     SetWaveEditSnap(WaveEditSnap),
     /// Apply the value typed into the user signal value editor.

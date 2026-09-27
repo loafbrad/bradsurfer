@@ -1,3 +1,4 @@
+use crate::user_signal_editor::EDIT_COLOR;
 use crate::{
     config::{FocusHighlight, ThemeColorPair, TransitionValue},
     dialog::{draw_open_sibling_state_file_dialog, draw_reload_waveform_dialog},
@@ -1268,6 +1269,12 @@ impl SystemState {
                 };
                 ui.set_max_width(ui.spacing().tooltip_width);
                 ui.add(egui::Label::new(tooltip));
+                if field.field.is_empty() && self.is_edited(&field.root) {
+                    ui.colored_label(
+                        EDIT_COLOR,
+                        "Edited: right-click the name to revert to the file's values",
+                    );
+                }
             });
         }
 
@@ -1531,6 +1538,17 @@ impl SystemState {
                             Some(field),
                             &self.user.config,
                         );
+                    }
+                    if self.is_edited(&var.variable_ref) {
+                        RichText::new(format!(" {}", egui_remixicon::icons::EDIT_2_FILL))
+                            .color(EDIT_COLOR)
+                            .line_height(Some(base_line_height))
+                            .append_to(
+                                &mut layout_job,
+                                ui.style(),
+                                FontSelection::Default,
+                                Align::Center,
+                            );
                     }
                 } else {
                     RichText::new(field.field.last().unwrap().clone())

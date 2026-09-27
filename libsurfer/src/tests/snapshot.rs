@@ -3913,7 +3913,7 @@ snapshot_ui_with_file_and_msgs! {user_signals_render, "examples/counter.vcd", [
     Message::AddVariables(vec![VariableRef::from_hierarchy_string("tb.dut.counter")]),
     Message::CreateUserSignal { name: "enable".to_string(), width: 1 },
     Message::CreateUserSignal { name: "bus".to_string(), width: 8 },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.enable"),
         start: BigInt::from(100),
         end: Some(BigInt::from(300)),
@@ -3924,14 +3924,14 @@ snapshot_ui_with_file_and_msgs! {user_signals_render, "examples/counter.vcd", [
         variable: VariableRef::from_hierarchy_string("user.enable"),
         time: BigInt::from(500),
     },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(200),
         end: Some(BigInt::from(450)),
         value: user_signal_value(0xab),
         continue_stroke: false,
     },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(600),
         end: None,
@@ -3944,21 +3944,21 @@ snapshot_ui_with_file_and_msgs! {user_signals_render, "examples/counter.vcd", [
 // creating an undo step.
 snapshot_ui_with_file_and_msgs! {user_signals_undo, "examples/counter.vcd", [
     Message::CreateUserSignal { name: "bus".to_string(), width: 4 },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(100),
         end: Some(BigInt::from(400)),
         value: user_signal_value(5),
         continue_stroke: false,
     },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(500),
         end: Some(BigInt::from(700)),
         value: user_signal_value(9),
         continue_stroke: false,
     },
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(0),
         end: None,
@@ -4273,7 +4273,7 @@ fn tick_preview_state(backend: &mut EguiSkia) -> SystemState {
     state.update(Message::SetWaveEditSnap(
         crate::user_signals::WaveEditSnap::Ticks,
     ));
-    state.update(Message::SetUserSignalValue {
+    state.update(Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.en"),
         start: BigInt::from(300),
         end: Some(BigInt::from(500)),
@@ -4324,7 +4324,7 @@ fn wave_edit_hover_preview_multi_bit() {
     let _runtime = enter_test_runtime();
     let mut backend = EguiSkia::new(1.0);
     let mut state = edit_preview_state(&mut backend);
-    state.update(Message::SetUserSignalValue {
+    state.update(Message::SetSignalValue {
         variable: VariableRef::from_hierarchy_string("user.bus"),
         start: BigInt::from(300),
         end: Some(BigInt::from(600)),
@@ -4359,3 +4359,252 @@ fn wave_edit_value_box() {
     }
     compare_frame_with_snapshot(&mut state, &mut backend, vec![], "wave_edit_value_box");
 }
+
+/// A state with `path` loaded and the given variables shown and loaded.
+fn loaded_state(path: &str, variables: &[&str]) -> SystemState {
+    let mut state = SystemState::new_default_config()
+        .unwrap()
+        .with_params(StartupParams {
+            waves: Some(WaveSource::File(
+                get_project_root().unwrap().join(path).try_into().unwrap(),
+            )),
+            ..Default::default()
+        });
+    wait_for_waves_fully_loaded(&mut state, 10);
+    state.update(Message::AddVariables(
+        variables
+            .iter()
+            .map(|v| VariableRef::from_hierarchy_string(v))
+            .collect(),
+    ));
+    wait_for_waves_fully_loaded(&mut state, 10);
+    state
+}
+
+/// The value of `variable` at `time` as shown, i.e. with edits applied.
+fn shown_value(state: &SystemState, variable: &str, time: u32) -> Option<u32> {
+    let result = state
+        .user
+        .waves
+        .as_ref()?
+        .inner
+        .as_waves()?
+        .query_variable(
+            &VariableRef::from_hierarchy_string(variable),
+            &num::BigUint::from(time),
+        )
+        .ok()??;
+    match result.current?.1 {
+        surfer_translation_types::VariableValue::BigUint(v) => u32::try_from(&v).ok(),
+        surfer_translation_types::VariableValue::String(_) => None,
+    }
+}
+
+fn is_edited(state: &SystemState, variable: &str) -> bool {
+    state.is_edited(&VariableRef::from_hierarchy_string(variable))
+}
+
+fn set_reset_high(state: &mut SystemState, start: u32, end: u32) {
+    state.update(Message::SetSignalValue {
+        variable: VariableRef::from_hierarchy_string("tb.dut.reset"),
+        start: BigInt::from(start),
+        end: Some(BigInt::from(end)),
+        value: user_signal_value(1),
+        continue_stroke: false,
+    });
+}
+
+#[test]
+fn file_signal_edits_apply_to_aliases_undo_and_revert() {
+    let _runtime = enter_test_runtime();
+    // `tb.reset` and `tb.dut.reset` are the same stored signal: 1 until 100 s, then 0.
+    let mut state = loaded_state("examples/counter.vcd", &["tb.dut.reset", "tb.reset"]);
+    assert_eq!(shown_value(&state, "tb.reset", 250), Some(0));
+
+    set_reset_high(&mut state, 200, 300);
+    for name in ["tb.dut.reset", "tb.reset"] {
+        assert!(is_edited(&state, name));
+        assert_eq!(shown_value(&state, name, 50), Some(1));
+        assert_eq!(shown_value(&state, name, 250), Some(1));
+        assert_eq!(shown_value(&state, name, 350), Some(0));
+    }
+    assert!(!is_edited(&state, "tb.dut.clk"));
+
+    state.update(Message::Undo(1));
+    assert_eq!(shown_value(&state, "tb.reset", 250), Some(0));
+    assert!(!is_edited(&state, "tb.reset"));
+    state.update(Message::Redo(1));
+    assert_eq!(shown_value(&state, "tb.reset", 250), Some(1));
+
+    // Reverting through either name restores the file's values for both.
+    state.update(Message::RevertSignalEdits(Some(
+        VariableRef::from_hierarchy_string("tb.reset"),
+    )));
+    assert_eq!(shown_value(&state, "tb.dut.reset", 250), Some(0));
+    assert!(!is_edited(&state, "tb.dut.reset"));
+    // Reverting can be undone too.
+    state.update(Message::Undo(1));
+    assert_eq!(shown_value(&state, "tb.dut.reset", 250), Some(1));
+}
+
+#[test]
+fn file_signal_edits_are_dropped_on_reload() {
+    let _runtime = enter_test_runtime();
+    let mut state = loaded_state("examples/counter.vcd", &["tb.dut.reset"]);
+    set_reset_high(&mut state, 200, 300);
+    assert!(is_edited(&state, "tb.dut.reset"));
+
+    // Reloading happens in the background, so wait for the new waveform to replace the old.
+    let container_id = |state: &SystemState| {
+        state
+            .user
+            .waves
+            .as_ref()
+            .and_then(|w| w.inner.as_waves())
+            .and_then(|w| w.signal_edits())
+            .map(|(id, _)| id)
+    };
+    let before = container_id(&state);
+    state.update(Message::ReloadWaveform(true));
+    let start = std::time::Instant::now();
+    while container_id(&state) == before {
+        assert!(
+            start.elapsed().as_secs() < 10,
+            "the waveform was not reloaded"
+        );
+        state.handle_async_messages();
+        state.handle_batch_commands();
+    }
+    wait_for_waves_fully_loaded(&mut state, 10);
+    assert!(!is_edited(&state, "tb.dut.reset"));
+    assert_eq!(shown_value(&state, "tb.dut.reset", 250), Some(0));
+
+    // Undo snapshots from before the reload do not bring the edits back.
+    state.update(Message::Undo(1));
+    assert!(!is_edited(&state, "tb.dut.reset"));
+}
+
+#[test]
+fn file_signal_edits_accept_only_bit_vectors_and_binary_values() {
+    let _runtime = enter_test_runtime();
+    let mut state = loaded_state("examples/counter.vcd", &["tb.dut.counter"]);
+    state.update(Message::SetSignalValue {
+        variable: VariableRef::from_hierarchy_string("tb.dut.counter"),
+        start: BigInt::from(200),
+        end: Some(BigInt::from(300)),
+        value: user_signal_value(0xa),
+        continue_stroke: false,
+    });
+    assert_eq!(shown_value(&state, "tb.dut.counter", 250), Some(0xa));
+    // Too wide for the 4-bit counter, and X/Z strings are not written.
+    for value in [
+        user_signal_value(0x1f),
+        surfer_translation_types::VariableValue::String("x1x1".to_string()),
+    ] {
+        state.update(Message::SetSignalValue {
+            variable: VariableRef::from_hierarchy_string("tb.dut.counter"),
+            start: BigInt::from(200),
+            end: Some(BigInt::from(300)),
+            value,
+            continue_stroke: false,
+        });
+        assert_eq!(shown_value(&state, "tb.dut.counter", 250), Some(0xa));
+    }
+
+    let state = loaded_state("examples/analog.vcd", &["top.sine_real", "top.counter8"]);
+    let container = state.user.waves.as_ref().unwrap().inner.as_waves().unwrap();
+    let width = |name| container.editable_width(&VariableRef::from_hierarchy_string(name));
+    assert_eq!(width("top.sine_real"), None);
+    assert_eq!(width("top.counter8"), Some(8));
+}
+
+#[test]
+fn wave_edit_paints_file_signal() {
+    let _runtime = enter_test_runtime();
+    let mut backend = EguiSkia::new(1.0);
+    let mut state = loaded_state("examples/counter.vcd", &["tb.dut.reset"]);
+    state.user.show_hierarchy = Some(false);
+    state.user.show_menu = Some(false);
+    state.user.show_toolbar = Some(false);
+    state.user.show_statusbar = Some(false);
+    state.user.show_overview = Some(false);
+    state.user.show_default_timeline = Some(false);
+    state.update(Message::SetWaveEditMode(true));
+    run_frame(&mut state, &mut backend, vec![]);
+    let (high_y, _) = first_row_halves(&state);
+
+    // Drag in the top half from about 300 s to 400 s, where reset is 0 in the file.
+    stroke(
+        &mut state,
+        &mut backend,
+        Pos2::new(canvas_x(300.), high_y),
+        &[
+            Pos2::new(canvas_x(350.), high_y),
+            Pos2::new(canvas_x(400.), high_y),
+        ],
+    );
+    assert!(is_edited(&state, "tb.reset"));
+    assert_eq!(shown_value(&state, "tb.reset", 350), Some(1));
+    assert_eq!(shown_value(&state, "tb.reset", 600), Some(0));
+    assert_eq!(state.user.waves.as_ref().unwrap().cursor, None);
+}
+
+snapshot_ui_with_file_and_msgs! {file_signal_edit_render, "examples/counter.vcd", [
+    Message::AddVariables(vec![
+        VariableRef::from_hierarchy_string("tb.dut.reset"),
+        VariableRef::from_hierarchy_string("tb.reset"),
+        VariableRef::from_hierarchy_string("tb.dut.counter"),
+    ]),
+    Message::SetSignalValue {
+        variable: VariableRef::from_hierarchy_string("tb.dut.reset"),
+        start: BigInt::from(200),
+        end: Some(BigInt::from(300)),
+        value: user_signal_value(1),
+        continue_stroke: false,
+    },
+    Message::SetSignalValue {
+        variable: VariableRef::from_hierarchy_string("tb.dut.counter"),
+        start: BigInt::from(400),
+        end: Some(BigInt::from(500)),
+        value: user_signal_value(0xa),
+        continue_stroke: false,
+    },
+]}
+
+/// Paints `value` over the 10 s cells from `start` to `end`, one stroke per call, like a drag.
+fn paint_cells(start: u32, end: u32, value: u32) -> Vec<Message> {
+    (start..end)
+        .step_by(10)
+        .map(|t| Message::SetSignalValue {
+            variable: VariableRef::from_hierarchy_string("tb.dut.reset"),
+            start: BigInt::from(t),
+            end: Some(BigInt::from(t + 10)),
+            value: user_signal_value(value),
+            continue_stroke: t != start,
+        })
+        .collect()
+}
+
+// Painting a pulse on a file signal and then painting it low again must leave a flat low
+// line, without glitch marks where the removed edits met the file's own 0.
+snapshot_ui_with_file_and_msgs! {file_signal_repainted_low_has_no_glitches, "examples/counter.vcd", {
+    let mut msgs = vec![Message::AddVariables(vec![
+        VariableRef::from_hierarchy_string("tb.dut.reset"),
+    ])];
+    msgs.extend(paint_cells(200, 400, 1));
+    msgs.extend(paint_cells(200, 400, 0));
+    msgs
+}}
+
+// reset is 1 until 100 s in the file. Painting it 0 from 50 s to 150 s only changes 50-100 s,
+// so only that part is striped.
+snapshot_ui_with_file_and_msgs! {file_signal_edit_stripes_only_differences, "examples/counter.vcd", [
+    Message::AddVariables(vec![VariableRef::from_hierarchy_string("tb.dut.reset")]),
+    Message::SetSignalValue {
+        variable: VariableRef::from_hierarchy_string("tb.dut.reset"),
+        start: BigInt::from(50),
+        end: Some(BigInt::from(150)),
+        value: user_signal_value(0),
+        continue_stroke: false,
+    },
+]}

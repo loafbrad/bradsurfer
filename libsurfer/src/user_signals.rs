@@ -12,9 +12,12 @@ use tracing::error;
 
 use crate::SystemState;
 use crate::displayed_item::{DisplayedFieldRef, DisplayedItem};
+use crate::signal_edits::SignalEdits;
 use crate::wave_container::{
     QueryResult, ScopeRef, ScopeRefExt as _, VarId, VariableMeta, VariableRef, VariableRefExt as _,
 };
+use crate::wave_container::{SignalId, WaveContainer};
+use crate::wave_data::WaveData;
 
 /// Name of the virtual top-level scope holding all user signals.
 pub const USER_SCOPE: &str = "user";
@@ -128,21 +131,24 @@ pub fn parse_user_value(text: &str, width: u32, default_radix: u32) -> Result<Va
     Ok(VariableValue::BigUint(value))
 }
 
+/// Values of a signal over time, as changes sorted by time with no two consecutive changes
+/// having the same value. Used for user signals and for edits of loaded signals.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UserSignal {
-    pub name: String,
-    pub width: u32,
-    /// Value changes sorted by time, with no two consecutive changes having the same value.
-    changes: Vec<(u64, VariableValue)>,
+pub struct ChangeList<V> {
+    changes: Vec<(u64, V)>,
 }
 
-impl UserSignal {
-    fn new(name: String, width: u32) -> Self {
+impl<V: Clone + PartialEq> ChangeList<V> {
+    /// A list holding `initial` from time 0.
+    pub fn new(initial: V) -> Self {
         Self {
-            name,
-            width,
-            changes: vec![(0, VariableValue::BigUint(BigUint::zero()))],
+            changes: vec![(0, initial)],
         }
+    }
+
+    #[must_use]
+    pub fn changes(&self) -> &[(u64, V)] {
+        &self.changes
     }
 
     /// Index of the first change strictly after `time`.
@@ -150,25 +156,27 @@ impl UserSignal {
         self.changes.partition_point(|(t, _)| *t <= time)
     }
 
-    fn value_at(&self, time: u64) -> Option<&VariableValue> {
+    /// The change in effect at `time`, as `(change time, value)`.
+    #[must_use]
+    pub fn entry_at(&self, time: u64) -> Option<(u64, &V)> {
         let idx = self.index_after(time);
-        (idx > 0).then(|| &self.changes[idx - 1].1)
+        (idx > 0).then(|| (self.changes[idx - 1].0, &self.changes[idx - 1].1))
     }
 
-    fn query(&self, time: u64) -> QueryResult {
-        let idx = self.index_after(time);
-        QueryResult {
-            current: (idx > 0).then(|| {
-                let (t, v) = &self.changes[idx - 1];
-                (BigUint::from(*t), v.clone())
-            }),
-            next: self.changes.get(idx).map(|(t, _)| BigUint::from(*t)),
-        }
+    #[must_use]
+    pub fn value_at(&self, time: u64) -> Option<&V> {
+        self.entry_at(time).map(|(_, v)| v)
+    }
+
+    /// The time of the first change strictly after `time`.
+    #[must_use]
+    pub fn next_after(&self, time: u64) -> Option<u64> {
+        self.changes.get(self.index_after(time)).map(|(t, _)| *t)
     }
 
     /// Set the value in `[start, end)`, or from `start` onwards if `end` is `None`.
     /// The value that was in effect at `end` resumes there.
-    fn set_range(&mut self, start: u64, end: Option<u64>, value: VariableValue) {
+    pub fn set_range(&mut self, start: u64, end: Option<u64>, value: V) {
         if end.is_some_and(|end| end <= start) {
             return;
         }
@@ -187,17 +195,52 @@ impl UserSignal {
 
     /// The span of constant value containing `time`, as `(start, end)` where `end` is `None`
     /// for the last span.
-    fn segment_at(&self, time: u64) -> (u64, Option<u64>) {
-        let idx = self.index_after(time);
-        let start = if idx > 0 { self.changes[idx - 1].0 } else { 0 };
-        (start, self.changes.get(idx).map(|(t, _)| *t))
+    #[must_use]
+    pub fn segment_at(&self, time: u64) -> (u64, Option<u64>) {
+        (
+            self.entry_at(time).map_or(0, |(t, _)| t),
+            self.next_after(time),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserSignal {
+    pub name: String,
+    pub width: u32,
+    changes: ChangeList<VariableValue>,
+}
+
+impl UserSignal {
+    fn new(name: String, width: u32) -> Self {
+        Self {
+            name,
+            width,
+            changes: ChangeList::new(VariableValue::BigUint(BigUint::zero())),
+        }
+    }
+
+    fn query(&self, time: u64) -> QueryResult {
+        QueryResult {
+            current: self
+                .changes
+                .entry_at(time)
+                .map(|(t, v)| (BigUint::from(t), v.clone())),
+            next: self.changes.next_after(time).map(BigUint::from),
+        }
     }
 
     fn fits(&self, value: &VariableValue) -> bool {
-        match value {
-            VariableValue::BigUint(v) => v.bits() <= u64::from(self.width),
-            VariableValue::String(s) => s.len() == self.width as usize,
-        }
+        value_fits(value, self.width)
+    }
+}
+
+/// Whether `value` can be stored in a signal `width` bits wide.
+#[must_use]
+pub fn value_fits(value: &VariableValue, width: u32) -> bool {
+    match value {
+        VariableValue::BigUint(v) => v.bits() <= u64::from(width),
+        VariableValue::String(s) => s.len() == width as usize,
     }
 }
 
@@ -299,7 +342,7 @@ impl UserSignals {
     pub fn changes(&self, idx: usize) -> Vec<(u64, VariableValue)> {
         self.signals
             .get(idx)
-            .map(|s| s.changes.clone())
+            .map(|s| s.changes.changes().to_vec())
             .unwrap_or_default()
     }
 
@@ -343,7 +386,9 @@ impl UserSignals {
             );
         }
         let to_u64 = |t: &BigUint| u64::try_from(t).unwrap_or(u64::MAX);
-        signal.set_range(to_u64(start), end.map(to_u64), value);
+        signal
+            .changes
+            .set_range(to_u64(start), end.map(to_u64), value);
         Ok(())
     }
 
@@ -356,33 +401,67 @@ impl UserSignals {
             bail!("Only one-bit signals can be toggled");
         }
         let time = u64::try_from(time).unwrap_or(u64::MAX);
-        let (start, end) = signal.segment_at(time);
+        let (start, end) = signal.changes.segment_at(time);
         let current_is_one =
-            matches!(signal.value_at(time), Some(VariableValue::BigUint(v)) if v.is_one());
+            matches!(signal.changes.value_at(time), Some(VariableValue::BigUint(v)) if v.is_one());
         let new = if current_is_one {
             BigUint::zero()
         } else {
             BigUint::one()
         };
-        signal.set_range(start, end, VariableValue::BigUint(new));
+        signal
+            .changes
+            .set_range(start, end, VariableValue::BigUint(new));
         Ok(())
     }
 }
 
+/// Restores user signals and edits of file signals saved in an undo snapshot. Edits saved for
+/// an earlier load of the file are skipped, since their signal references may point at other
+/// signals now.
+pub(crate) fn restore_edited_signals(
+    waves: &mut WaveData,
+    user_signals: Option<UserSignals>,
+    signal_edits: Option<(u64, SignalEdits)>,
+) {
+    if let (Some(saved), Some(current)) = (user_signals, waves.user_signals_mut()) {
+        *current = saved;
+    }
+    let Some(container) = waves.inner.as_waves_mut() else {
+        return;
+    };
+    let current_id = container.signal_edits().map(|(id, _)| id);
+    if let Some((saved_id, saved)) = signal_edits
+        && Some(saved_id) == current_id
+        && let Some(current) = container.signal_edits_mut()
+    {
+        *current = saved;
+    }
+}
+
 impl SystemState {
-    /// Applies `edit` to a copy of the user signals and, if it succeeds, stores the result.
-    /// An undo step named `undo_msg` is created unless it is `None`, which is used for the
-    /// later parts of a paint stroke so the whole stroke is undone at once.
-    fn edit_user_signals<T>(
+    /// Applies `edit` to copies of the user signals and of the edits of file signals and, if
+    /// it succeeds, stores the results. An undo step named `undo_msg` is created unless it is
+    /// `None`, which is used for the later parts of a paint stroke so the whole stroke is
+    /// undone at once.
+    fn edit_signals<T>(
         &mut self,
         undo_msg: Option<String>,
-        edit: impl FnOnce(&mut UserSignals) -> Result<T>,
+        edit: impl FnOnce(&WaveContainer, &mut UserSignals, &mut SignalEdits) -> Result<T>,
     ) -> Option<T> {
-        let Some(mut user_signals) = self.user.waves.as_ref()?.user_signals().cloned() else {
-            error!("User signals need a waveform loaded from a file");
+        let Some(container) = self.user.waves.as_ref()?.inner.as_waves() else {
+            error!("Signals can only be edited in waveforms loaded from a file");
             return None;
         };
-        let result = match edit(&mut user_signals) {
+        let (Some(user_signals), Some((_, signal_edits))) =
+            (container.user_signals(), container.signal_edits())
+        else {
+            error!("Signals can only be edited in waveforms loaded from a file");
+            return None;
+        };
+        // Cheap: edits of file signals are shared until changed.
+        let (mut user_signals, mut signal_edits) = (user_signals.clone(), signal_edits.clone());
+        let result = match edit(container, &mut user_signals, &mut signal_edits) {
             Ok(result) => result,
             Err(e) => {
                 error!("{e:#}");
@@ -394,15 +473,35 @@ impl SystemState {
         }
         let waves = self.user.waves.as_mut()?;
         *waves.user_signals_mut()? = user_signals;
-        // Analog caches are keyed by signal, so rebuild them from the edited data.
-        waves.cache_generation += 1;
-        self.invalidate_draw_commands();
+        *waves.inner.as_waves_mut()?.signal_edits_mut()? = signal_edits;
+        self.invalidate_signal_data_caches();
         Some(result)
+    }
+
+    /// Whether `variable` is a signal from the file with edits (possibly through an alias).
+    pub(crate) fn is_edited(&self, variable: &VariableRef) -> bool {
+        self.user
+            .waves
+            .as_ref()
+            .and_then(|w| w.inner.as_waves())
+            .is_some_and(|w| w.is_edited(variable))
+    }
+
+    /// Makes everything showing signal values read them again after they were edited.
+    pub(crate) fn invalidate_signal_data_caches(&mut self) {
+        if let Some(waves) = self.user.waves.as_mut() {
+            // Analog caches are keyed by signal, so rebuild them from the edited data.
+            waves.cache_generation += 1;
+        }
+        self.frame_buffer_array_cache = None;
+        self.frame_buffer_pixel_cache = None;
+        self.memory_viewer_cache = None;
+        self.invalidate_draw_commands();
     }
 
     pub(crate) fn create_user_signal(&mut self, name: String, width: u32) {
         let Some(variable) = self
-            .edit_user_signals(Some(format!("Create signal {name}")), |signals| {
+            .edit_signals(Some(format!("Create signal {name}")), |_, signals, _| {
                 signals.create(name.clone(), width)
             })
         else {
@@ -414,7 +513,8 @@ impl SystemState {
         self.invalidate_draw_commands();
     }
 
-    pub(crate) fn set_user_signal_value(
+    /// Sets the value of a user signal or of a signal from the file in `[start, end)`.
+    pub(crate) fn set_signal_value(
         &mut self,
         variable: &VariableRef,
         start: &BigInt,
@@ -426,15 +526,69 @@ impl SystemState {
         let start = to_unsigned(start);
         let end = end.map(to_unsigned);
         let undo_msg = (!continue_stroke).then(|| format!("Edit {}", variable.name));
-        self.edit_user_signals(undo_msg, |signals| {
-            signals.set_range(variable, &start, end.as_ref(), value)
+        self.edit_signals(undo_msg, |container, user_signals, signal_edits| {
+            if user_signals.index_of(variable).is_some() {
+                return user_signals.set_range(variable, &start, end.as_ref(), value);
+            }
+            let Some(width) = container.editable_width(variable) else {
+                bail!(
+                    "{} cannot be edited: only loaded bit-vector signals can",
+                    variable.full_path_string()
+                );
+            };
+            // Only two-state values can be written for now.
+            if !matches!(value, VariableValue::BigUint(_)) || !value_fits(&value, width) {
+                bail!(
+                    "{value} is not a 0/1 value that fits in {} ({width} bits)",
+                    variable.full_path_string()
+                );
+            }
+            let SignalId::Wellen(signal_ref) = container.signal_id(variable)? else {
+                bail!(
+                    "{} is not a signal from the file",
+                    variable.full_path_string()
+                );
+            };
+            let to_u64 = |t: &BigUint| u64::try_from(t).unwrap_or(u64::MAX);
+            signal_edits.set_range(signal_ref, to_u64(&start), end.as_ref().map(to_u64), value);
+            Ok(())
         });
     }
 
     pub(crate) fn toggle_user_signal(&mut self, variable: &VariableRef, time: &BigInt) {
         let time = time.to_biguint().unwrap_or_default();
-        self.edit_user_signals(Some(format!("Edit {}", variable.name)), |signals| {
+        self.edit_signals(Some(format!("Edit {}", variable.name)), |_, signals, _| {
             signals.toggle_at(variable, &time)
+        });
+    }
+
+    /// Restores the file's values of `variable` (and its aliases), or of all signals.
+    pub(crate) fn revert_signal_edits(&mut self, variable: Option<&VariableRef>) {
+        let undo_msg = variable.map_or_else(
+            || "Revert all edits".to_string(),
+            |v| format!("Revert edits of {}", v.name),
+        );
+        self.edit_signals(Some(undo_msg), |container, _, signal_edits| {
+            match variable {
+                Some(variable) => {
+                    let SignalId::Wellen(signal_ref) = container.signal_id(variable)? else {
+                        bail!(
+                            "{} is not a signal from the file",
+                            variable.full_path_string()
+                        );
+                    };
+                    if !signal_edits.revert(signal_ref) {
+                        bail!("{} has no edits", variable.full_path_string());
+                    }
+                }
+                None => {
+                    if signal_edits.is_empty() {
+                        bail!("No signals have been edited");
+                    }
+                    signal_edits.revert_all();
+                }
+            }
+            Ok(())
         });
     }
 
@@ -508,11 +662,11 @@ impl SystemState {
             .user
             .waves
             .as_ref()
-            .and_then(|w| w.user_signals())
-            .and_then(|s| s.index_of(&pending.variable).and_then(|i| s.get(i)))
-            .map_or(0, |s| s.width);
+            .and_then(|w| w.inner.as_waves())
+            .and_then(|w| w.editable_width(&pending.variable))
+            .unwrap_or(0);
         match parse_user_value(&pending.text, width, pending.radix) {
-            Ok(value) => self.set_user_signal_value(
+            Ok(value) => self.set_signal_value(
                 &pending.variable,
                 &pending.start,
                 pending.end.as_ref(),
@@ -543,12 +697,15 @@ mod tests {
         UserSignal {
             name: "s".to_string(),
             width: 8,
-            changes: changes.iter().map(|(t, x)| (*t, v(*x))).collect(),
+            changes: ChangeList {
+                changes: changes.iter().map(|(t, x)| (*t, v(*x))).collect(),
+            },
         }
     }
 
     fn changes(s: &UserSignal) -> Vec<(u64, u32)> {
         s.changes
+            .changes()
             .iter()
             .map(|(t, val)| match val {
                 VariableValue::BigUint(b) => (*t, u32::try_from(b).unwrap()),
@@ -560,49 +717,49 @@ mod tests {
     #[test]
     fn set_range_inside_constant_span_resumes_old_value() {
         let mut s = signal(&[(0, 0)]);
-        s.set_range(10, Some(20), v(5));
+        s.changes.set_range(10, Some(20), v(5));
         assert_eq!(changes(&s), [(0, 0), (10, 5), (20, 0)]);
     }
 
     #[test]
     fn set_range_replaces_changes_inside_range() {
         let mut s = signal(&[(0, 0), (12, 1), (15, 2), (30, 3)]);
-        s.set_range(10, Some(20), v(7));
+        s.changes.set_range(10, Some(20), v(7));
         assert_eq!(changes(&s), [(0, 0), (10, 7), (20, 2), (30, 3)]);
     }
 
     #[test]
     fn set_range_keeps_existing_change_at_end() {
         let mut s = signal(&[(0, 0), (20, 1)]);
-        s.set_range(10, Some(20), v(7));
+        s.changes.set_range(10, Some(20), v(7));
         assert_eq!(changes(&s), [(0, 0), (10, 7), (20, 1)]);
     }
 
     #[test]
     fn set_range_merges_equal_neighbours() {
         let mut s = signal(&[(0, 0), (10, 5), (20, 0)]);
-        s.set_range(10, Some(20), v(0));
+        s.changes.set_range(10, Some(20), v(0));
         assert_eq!(changes(&s), [(0, 0)]);
 
         let mut s = signal(&[(0, 0), (10, 5), (20, 0)]);
-        s.set_range(20, Some(30), v(5));
+        s.changes.set_range(20, Some(30), v(5));
         assert_eq!(changes(&s), [(0, 0), (10, 5), (30, 0)]);
     }
 
     #[test]
     fn set_range_open_ended_and_empty() {
         let mut s = signal(&[(0, 0), (10, 1), (50, 2)]);
-        s.set_range(20, None, v(9));
+        s.changes.set_range(20, None, v(9));
         assert_eq!(changes(&s), [(0, 0), (10, 1), (20, 9)]);
 
-        s.set_range(30, Some(30), v(4));
+        s.changes.set_range(30, Some(30), v(4));
         assert_eq!(changes(&s), [(0, 0), (10, 1), (20, 9)]);
     }
 
     #[test]
     fn set_range_past_last_change() {
         let mut s = signal(&[(0, 0)]);
-        s.set_range(100, Some(200), v(1));
+        s.changes.set_range(100, Some(200), v(1));
         assert_eq!(changes(&s), [(0, 0), (100, 1), (200, 0)]);
     }
 

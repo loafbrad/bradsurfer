@@ -1,4 +1,6 @@
-//! Drawing on user signals (see [`crate::user_signals`]) with the mouse while edit mode is on.
+//! Drawing on signals with the mouse while edit mode is on: user signals (see
+//! [`crate::user_signals`]) and bit-vector signals from the file (see
+//! [`crate::signal_edits`]).
 //!
 //! One-bit signals are painted: the height of the pointer in the row picks the level (top half
 //! high, bottom half low), a press paints the cell under the pointer and dragging paints every
@@ -13,6 +15,7 @@ use surfer_translation_types::VariableValue;
 
 use crate::SystemState;
 use crate::displayed_item::DisplayedItem;
+use crate::item_drawing_info::ItemDrawingInfo;
 use crate::message::Message;
 use crate::user_signals::{UserSignals, WaveEditSnap, tick_cell};
 use crate::wave_container::VariableRef;
@@ -102,7 +105,7 @@ impl EditCanvas<'_> {
     }
 }
 
-/// The row of a user signal on the canvas.
+/// The row of an editable signal on the canvas.
 #[derive(Clone)]
 struct EditTarget {
     variable: VariableRef,
@@ -136,8 +139,8 @@ enum EditGesture {
 }
 
 /// A translucent hint of what an edit will change.
-/// Color of the edit a press would make.
-const PREVIEW_COLOR: Color32 = Color32::from_rgb(255, 204, 0);
+/// Color of the edit a press would make, and of the marker on edited signals.
+pub(crate) const EDIT_COLOR: Color32 = Color32::from_rgb(255, 204, 0);
 
 /// A preview of what an edit will change, in screen coordinates.
 #[derive(Default)]
@@ -157,18 +160,23 @@ impl EditPreview {
             painter.rect_filled(*rect, 0., Color32::from_black_alpha(170));
         }
         if let Some(fill) = self.fill {
-            painter.rect_filled(fill, 0., PREVIEW_COLOR.gamma_multiply(0.25));
+            painter.rect_filled(fill, 0., EDIT_COLOR.gamma_multiply(0.25));
         }
         if self.ghost.len() >= 2 {
             painter.extend(egui::Shape::dashed_line(
                 &self.ghost,
-                Stroke::new(1.5, PREVIEW_COLOR),
+                Stroke::new(1.5, EDIT_COLOR),
                 5.,
                 3.,
             ));
         }
     }
 }
+
+/// Pixels between the diagonal stripes marking edited stretches.
+const STRIPE_SPACING: f32 = 10.;
+/// How fast the stripes move, in pixels per second.
+const STRIPE_SPEED: f32 = 12.;
 
 /// Result of [`SystemState::handle_wave_edit_input`].
 #[derive(Default)]
@@ -179,7 +187,7 @@ pub(crate) struct WaveEditInput {
 }
 
 fn paint_message(variable: &VariableRef, cell: Cell, high: bool, continue_stroke: bool) -> Message {
-    Message::SetUserSignalValue {
+    Message::SetSignalValue {
         variable: variable.clone(),
         start: cell.0,
         end: cell.1,
@@ -214,15 +222,19 @@ fn cells_union(a: &Cell, b: &Cell) -> Cell {
 }
 
 impl SystemState {
-    /// The user signal row at canvas position `pos`.
+    /// The row of an editable signal at canvas position `pos`.
     fn edit_target_at(&self, c: &EditCanvas, pos: Pos2) -> Option<EditTarget> {
         let (item_ref, info) = c.waves.item_and_drawing_info_at_y(pos.y - c.row_offset)?;
         let Some(DisplayedItem::Variable(displayed)) = c.waves.displayed_items.get(&item_ref)
         else {
             return None;
         };
-        let signals = c.waves.user_signals()?;
-        let signal = signals.get(signals.index_of(&displayed.variable_ref)?)?;
+        // User signals, and loaded bit-vector signals from the file.
+        let width = c
+            .waves
+            .inner
+            .as_waves()?
+            .editable_width(&displayed.variable_ref)?;
         // The same geometry `draw_wave_data` uses for one-bit traces.
         let layout = &self.user.config.layout;
         let high_y = info.top() + layout.waveforms_gap;
@@ -230,7 +242,7 @@ impl SystemState {
             high_y + layout.waveforms_line_height * displayed.height_scaling_factor.unwrap_or(1.);
         Some(EditTarget {
             variable: displayed.variable_ref.clone(),
-            width: signal.width,
+            width,
             top: info.top(),
             bottom: info.bottom(),
             high_y,
@@ -478,6 +490,70 @@ impl SystemState {
         }
     }
 
+    /// Marks the stretches where edits make signals from the file differ from the file with
+    /// moving diagonal stripes. Edits that match the file's values are not marked.
+    pub(crate) fn draw_edited_spans(&self, ui: &Ui, c: &EditCanvas, painter: &egui::Painter) {
+        let Some(container) = c.waves.inner.as_waves() else {
+            return;
+        };
+        if container
+            .signal_edits()
+            .is_none_or(|(_, edits)| edits.is_empty())
+        {
+            return;
+        }
+        let to_u64 = |t: BigInt| u64::try_from(t).unwrap_or(0);
+        let from = to_u64(c.time_at(0.));
+        let to = to_u64(c.time_at(c.frame_width)).saturating_add(1);
+        let phase = (ui.input(|i| i.time) as f32 * STRIPE_SPEED).rem_euclid(STRIPE_SPACING);
+        let stroke = Stroke::new(2., EDIT_COLOR.gamma_multiply(0.45));
+        let canvas_height = c.to_screen.to().height();
+
+        let mut drawn = false;
+        for info in c
+            .waves
+            .visible_drawing_infos(-c.row_offset, canvas_height - c.row_offset)
+        {
+            // Only the row of the whole signal, not rows of its translated fields.
+            let ItemDrawingInfo::Variable(row) = info else {
+                continue;
+            };
+            if !row.field_ref.field.is_empty() {
+                continue;
+            }
+            for (start, end) in container.changed_spans(&row.field_ref.root, from, to) {
+                let cell = (BigInt::from(start), Some(BigInt::from(end)));
+                let mut rect = c.cell_rect(&cell, row.top, row.bottom);
+                // Keep very short changes visible.
+                if rect.width() < 2. {
+                    rect = Rect::from_center_size(rect.center(), emath::vec2(2., rect.height()));
+                }
+                drawn = true;
+                let clipped = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+                clipped.rect_filled(rect, 0., EDIT_COLOR.gamma_multiply(0.08));
+                // Lines rising to the right, on a grid shared by all stretches so the pattern
+                // lines up across them and moves smoothly.
+                let height = rect.height();
+                let first = rect.left() - height;
+                let mut x = first - (first - phase).rem_euclid(STRIPE_SPACING);
+                while x < rect.right() {
+                    clipped.line_segment(
+                        [
+                            Pos2::new(x, rect.bottom()),
+                            Pos2::new(x + height, rect.top()),
+                        ],
+                        stroke,
+                    );
+                    x += STRIPE_SPACING;
+                }
+            }
+        }
+        if drawn {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
+    }
+
     /// Draws the value box of a pending multi-bit edit inside the signal's row.
     pub(crate) fn draw_user_signal_value_box(
         &self,
@@ -519,7 +595,7 @@ impl SystemState {
                 row_bottom,
             ),
             0.,
-            PREVIEW_COLOR.gamma_multiply(0.25),
+            EDIT_COLOR.gamma_multiply(0.25),
         );
 
         let x = c

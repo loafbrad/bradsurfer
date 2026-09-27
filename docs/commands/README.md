@@ -79,10 +79,16 @@ Not all commands are available unless a file is loaded. Also, some commands are 
 
   Add a timeline row.
 
-## Created signals
+## Created and edited signals
 
 Signals can be created and drawn by hand next to the signals loaded from a waveform file.
 They appear in a top-level scope named ``user`` and are kept in memory only.
+
+Bit-vector signals loaded from the file can be edited the same way in edit mode, writing 0
+and 1 values. The file itself is not changed: edits are kept in memory, marked with a pencil
+next to the signal's name, and can be undone or reverted. Editing a signal also edits every
+other name for the same stored signal (for example ``tb.clk`` and ``tb.dut.clk``). Edits are
+dropped when the file is reloaded, and the FST export still writes the file's values.
 
 * ``signal_create <NAME> <WIDTH>``
 
@@ -107,6 +113,16 @@ They appear in a top-level scope named ``user`` and are kept in memory only.
   segment. The value is then typed into a box in the row, in the signal's display format
   (hexadecimal, binary, octal or decimal) unless prefixed with ``0x``, ``0b``, ``0o`` or ``0d``.
   Enter sets the value, Escape cancels.
+
+* ``signal_revert <VARIABLE>``
+
+  Remove the edits of a signal loaded from the waveform file, restoring the file's values.
+  Edits of a file signal apply to every name (alias) of the same stored signal, so they are
+  reverted together.
+
+* ``signal_revert_all``
+
+  Remove the edits of all signals loaded from the waveform file.
 
 * ``edit_snap_to <ticks | VARIABLE>``
 

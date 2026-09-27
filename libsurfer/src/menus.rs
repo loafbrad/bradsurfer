@@ -741,6 +741,18 @@ impl SystemState {
             }
         }
 
+        if let DisplayedItem::Variable(variable) = clicked_item
+            && self.is_edited(&variable.variable_ref)
+            && ui
+                .button("Revert edits")
+                .on_hover_text("Restore the values in the file, also for aliases of this signal")
+                .clicked()
+        {
+            msgs.push(Message::RevertSignalEdits(Some(
+                variable.variable_ref.clone(),
+            )));
+        }
+
         // While editing signals, any shown signal can be the grid that edits snap to.
         if self.wave_edit_mode
             && let DisplayedItem::Variable(variable) = clicked_item

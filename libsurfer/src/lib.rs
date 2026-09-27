@@ -45,6 +45,7 @@ pub mod overview;
 pub mod rectangle;
 pub mod remote;
 pub mod server_file_window;
+pub mod signal_edits;
 pub mod state;
 pub mod state_file_io;
 pub mod state_util;
@@ -91,7 +92,8 @@ use crate::displayed_item_tree::ItemIndex;
 use crate::displayed_item_tree::TargetPosition;
 use crate::rectangle::RectAnnotation;
 use crate::remote::get_time_table_from_server;
-use crate::user_signals::{NewUserSignalDialog, UserSignals, WaveEditSnap};
+use crate::signal_edits::SignalEdits;
+use crate::user_signals::{NewUserSignalDialog, UserSignals, WaveEditSnap, restore_edited_signals};
 use crate::variable_name_type::VariableNameType;
 
 use std::collections::HashMap;
@@ -306,6 +308,8 @@ struct CanvasState {
     selected_annotation: Option<Id>,
     annotation_counter: i32,
     user_signals: Option<UserSignals>,
+    /// Edits of file signals, with the id of the container their signal references belong to.
+    signal_edits: Option<(u64, SignalEdits)>,
 }
 
 impl SystemState {
@@ -2061,17 +2065,16 @@ impl SystemState {
                         waves.annotation_list_visible = prev_state.annotation_list;
                         waves.selected_annotation = prev_state.selected_annotation;
                         waves.annotation_counter = prev_state.annotation_counter;
-                        if let (Some(saved), Some(current)) =
-                            (prev_state.user_signals, waves.user_signals_mut())
-                        {
-                            *current = saved;
-                            waves.cache_generation += 1;
-                        }
+                        restore_edited_signals(
+                            waves,
+                            prev_state.user_signals,
+                            prev_state.signal_edits,
+                        );
                     } else {
                         break;
                     }
                 }
-                self.invalidate_draw_commands();
+                self.invalidate_signal_data_caches();
             }
             Message::Redo(count) => {
                 let waves = self.user.waves.as_mut()?;
@@ -2089,17 +2092,16 @@ impl SystemState {
                         waves.annotation_list_visible = prev_state.annotation_list;
                         waves.selected_annotation = prev_state.selected_annotation;
                         waves.annotation_counter = prev_state.annotation_counter;
-                        if let (Some(saved), Some(current)) =
-                            (prev_state.user_signals, waves.user_signals_mut())
-                        {
-                            *current = saved;
-                            waves.cache_generation += 1;
-                        }
+                        restore_edited_signals(
+                            waves,
+                            prev_state.user_signals,
+                            prev_state.signal_edits,
+                        );
                     } else {
                         break;
                     }
                 }
-                self.invalidate_draw_commands();
+                self.invalidate_signal_data_caches();
             }
             Message::DumpTree => {
                 let waves = self.user.waves.as_ref()?;
@@ -2457,15 +2459,14 @@ impl SystemState {
                 }
             }
             Message::CreateUserSignal { name, width } => self.create_user_signal(name, width),
-            Message::SetUserSignalValue {
+            Message::SetSignalValue {
                 variable,
                 start,
                 end,
                 value,
                 continue_stroke,
-            } => {
-                self.set_user_signal_value(&variable, &start, end.as_ref(), value, continue_stroke)
-            }
+            } => self.set_signal_value(&variable, &start, end.as_ref(), value, continue_stroke),
+            Message::RevertSignalEdits(variable) => self.revert_signal_edits(variable.as_ref()),
             Message::ToggleUserSignal { variable, time } => {
                 self.toggle_user_signal(&variable, &time);
             }

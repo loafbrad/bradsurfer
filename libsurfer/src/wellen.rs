@@ -14,6 +14,7 @@ use wellen::{
     TimeTable, TimeTableIdx, Timescale, TimescaleUnit, Var, VarRef, VarType,
 };
 
+use crate::signal_edits::SignalEdits;
 use crate::time::{TimeScale, TimeUnit};
 use crate::user_signals::UserSignals;
 use crate::variable_direction::VariableDirectionExt;
@@ -46,6 +47,8 @@ pub struct WellenContainer {
     body_loaded: bool,
     /// Signals created by the user, shown in a virtual top-level scope.
     pub(crate) user_signals: UserSignals,
+    /// Edits of signals loaded from the file.
+    pub(crate) signal_edits: SignalEdits,
 }
 
 /// Returned by `load_variables` if we want to load the variables on a background thread.
@@ -191,7 +194,14 @@ impl WellenContainer {
             unique_id,
             body_loaded: false,
             user_signals: UserSignals::default(),
+            signal_edits: SignalEdits::default(),
         }
+    }
+
+    /// Identifies this container, and so the signal references into it, across reloads.
+    #[must_use]
+    pub fn unique_id(&self) -> u64 {
+        self.unique_id
     }
 
     #[must_use]
@@ -614,6 +624,29 @@ impl WellenContainer {
             // if the signal has not been loaded yet, we return an empty result
             return Ok(None);
         };
+        let time_u64 = u64::try_from(time).unwrap_or(u64::MAX);
+        Ok(self.signal_edits.query(signal_ref, time_u64, |t| {
+            Some(self.query_file_signal(sig, &BigUint::from(t)))
+        }))
+    }
+
+    /// The time ranges within `[from, to)` where edits make `variable` differ from the file.
+    #[must_use]
+    pub fn changed_spans(&self, variable: &VariableRef, from: u64, to: u64) -> Vec<(u64, u64)> {
+        let Ok(var_ref) = self.get_var_ref(variable) else {
+            return vec![];
+        };
+        let signal_ref = self.hierarchy[var_ref].signal_ref();
+        let Some(sig) = self.signals.get(&signal_ref) else {
+            return vec![];
+        };
+        self.signal_edits.changed_spans(signal_ref, from, to, |t| {
+            Some(self.query_file_signal(sig, &BigUint::from(t)))
+        })
+    }
+
+    /// The value of a loaded signal at `time` as stored in the file, without edits.
+    fn query_file_signal(&self, sig: &Signal, time: &BigUint) -> QueryResult {
         let time_table = &self.time_table;
 
         // convert time to index
@@ -631,22 +664,20 @@ impl WellenContainer {
                     .and_then(|i| time_table.get(i.get() as usize));
 
                 let converted_value = convert_variable_value(current_value);
-                let result = QueryResult {
+                return QueryResult {
                     current: Some((BigUint::from(offset_time), converted_value)),
                     next: next_time.map(|t| BigUint::from(*t)),
                 };
-                return Ok(Some(result));
             }
         }
 
         // if `get_offset` returns None, this means that there is no change at or before the requested time
         let first_index = sig.get_first_time_idx();
         let next_time = first_index.and_then(|i| time_table.get(i as usize));
-        let result = QueryResult {
+        QueryResult {
             current: None,
             next: next_time.map(|t| BigUint::from(*t)),
-        };
-        Ok(Some(result))
+        }
     }
 
     #[must_use]
